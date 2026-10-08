@@ -168,9 +168,15 @@ cursor style". Measured on the reference machine: a test program saw
 `NewShell` runs the new shell asynchronously (dos.doc, SystemTagList,
 lines 5884-5888), so for an interactive shell `SystemTags()` returns as soon
 as the shell has started. The handler therefore ends a shell session when
-every console handle has been closed, and the exit status sent to the
-client is `NewShell`'s own return code. For `exec` the command runs
-synchronously and the client gets the command's real return code.
+every console handle has been closed. Its exit status comes from the
+shell itself: every AmigaDOS shell keeps the last command's code in its
+CLI structure (`cli_ReturnCode`, dos/dosextens.h), and the shell reads
+each new command line from the handler. On each READ from the shell
+process (the first CLI process that reads), the handler notes that field
+while the shell waits for the reply, so the code noted at the last read
+is that of the last command before `EndShell` or end of input. If
+`NewShell` itself fails, its code is sent instead. For `exec` the command
+runs synchronously and the client gets the command's real return code.
 
 The process-handling design follows the approach used by telnetd for AmigaOS (github.com/toralux/amiga-telnetd, MIT, by Tor Anders
 Johansen). That design calls `SystemTags()` from a helper that blocks until

@@ -3,7 +3,8 @@
 An SSH server for AmigaOS 3.x on 68k Amigas. It is the Dropbear SSH server,
 adapted to AmigaOS: you can log in from any SSH client, get an AmigaDOS
 shell, or run single commands (`ssh amiga@<address> list`) and get the
-command's return code back. Several sessions can run at once. How the port
+command's return code back; leaving a shell returns the code of the last
+command typed. Several sessions can run at once. How the port
 works is described in [docs/DESIGN.md](docs/DESIGN.md).
 
 ## Requirements
@@ -79,6 +80,9 @@ Uploads are written to a temporary file next to the destination
 interrupted upload leaves the existing file as it was. The data goes
 straight to the destination's disk, never into RAM.
 
+The largest file AmigaOS 3.x can hold is just under 2 GB: its file
+positions are 32-bit, and the 3.2 NDK defines no 64-bit file calls.
+
 Measured on an A2000 with PiStorm, after login: 1 MB up in about 4
 seconds, 1 MB down in about 2.5 seconds, 20 MB to the hard disk in about 80
 seconds; a transfer uses about 650 KB of fast RAM and no chip RAM,
@@ -144,14 +148,6 @@ stays) and the programs from `C:`. It then asks whether to delete
 `DEVS:Internet/sshd` too; pressing Return keeps it, so a later install
 reuses the same host keys and password. A server that is still running
 stops at the next reboot.
-
-## Limitations
-
-- Files must stay under 2 GB: AmigaOS 3.x file positions are 32-bit, and
-  the 3.2 NDK defines no 64-bit file calls.
-- For an interactive shell the exit status the client receives is that of
-  `NewShell`, not of the last command typed. `ssh amiga@<address> <command>`
-  returns the command's real return code.
 
 ## Environment variables
 

@@ -174,6 +174,12 @@ static struct List writeq;		/* WRITE packets not yet buffered */
 static struct Task *reader_task;	/* gets Ctrl-C (last reader) */
 static struct Task *writer_task;	/* fallback if nobody has read */
 
+/* Shell mode: the shell process (the first CLI process that reads) and the
+ * return code its CLI held when it last asked for a line, which is the
+ * code of the command before it (dos/dosextens.h, cli_ReturnCode). */
+static struct Process *shell_proc;
+static LONG shell_rc;
+
 static BPTR h_in, h_out;		/* handles passed to SystemTagList() */
 static LONG opens;			/* handles on the port not yet ENDed */
 static int saw_find;			/* something opened "*" on the port */
@@ -287,6 +293,26 @@ static struct Task *packet_task(const struct DosPacket *pkt)
 	if (p != NULL && (p->mp_Flags & PF_ACTION) == PA_SIGNAL)
 		return (struct Task *)p->mp_SigTask;
 	return NULL;
+}
+
+/* Shell mode: records the shell's last return code when it reads. The
+ * first CLI process that reads from the port is taken as the shell; the
+ * startup file runs before that, from its own handle. The reader waits
+ * for our reply, so its CLI structure stays put while we look. */
+static void note_shell_rc(struct Task *t)
+{
+	struct Process *pr = (struct Process *)t;
+	struct CommandLineInterface *cli;
+
+	if (blk->command != NULL || t == NULL
+	    || t->tc_Node.ln_Type != NT_PROCESS || pr->pr_CLI == 0)
+		return;
+	if (shell_proc == NULL)
+		shell_proc = pr;
+	if (pr != shell_proc)
+		return;
+	cli = (struct CommandLineInterface *)BADDR(pr->pr_CLI);
+	shell_rc = cli->cli_ReturnCode;
 }
 
 /* ---- DOS packets -------------------------------------------------------- */
@@ -882,6 +908,7 @@ static void handle_packet(struct Message *msg)
 
 		if (t != NULL)
 			reader_task = t;
+		note_shell_rc(t);
 		if (pkt->dp_Arg3 <= 0) {
 			reply_packet(pkt, 0, 0);
 			break;
@@ -1310,7 +1337,12 @@ static void close_channel(void)
 	ring_clear(&out_ring);
 	discard_writes();
 	serve_reads();
-	publish_rc(helper_rc);
+	/* A shell's result is its last command's code, as with a Unix
+	 * shell; NewShell's own code only tells whether it started. */
+	if (blk->command == NULL && shell_proc != NULL && helper_rc == 0)
+		publish_rc(shell_rc);
+	else
+		publish_rc(helper_rc);
 	finished = 1;
 	finished_at = now_secs();
 }
