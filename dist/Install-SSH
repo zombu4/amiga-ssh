@@ -8,7 +8,8 @@
 ;     Execute Install-SSH
 ;
 ; It asks no questions. It installs:
-;   C:sshd, C:sshd-console, C:sshpasswd, C:dropbearkey, C:sshd-startup
+;   C:sshd, C:sshd-console, C:sshpasswd, C:dropbearkey, C:sshd-startup,
+;   C:sftp-server
 ;   DEVS:Internet/sshd/config           (only if missing)
 ;   DEVS:Internet/sshd/authorized_keys  (only if missing, empty)
 ;   DEVS:Internet/sshd/shell-startup    (only if missing)
@@ -68,6 +69,10 @@ If NOT EXISTS "shell-startup"
   Echo "Install-SSH: the file shell-startup is missing from this directory."
   Quit 20
 EndIf
+If NOT EXISTS "sftp-server"
+  Echo "Install-SSH: the file sftp-server is missing from this directory."
+  Quit 20
+EndIf
 
 ; ---- Step 2: is a TCP/IP stack running? --------------------------------
 ; Version opens the library. It returns 0 if bsdsocket.library version 4
@@ -86,7 +91,7 @@ EndIf
 Echo "Installing amiga-ssh..."
 
 ; ---- Step 3: copy the programs to C: -----------------------------------
-; Each program is first copied to C:<name>.new. Only when all five copies
+; Each program is first copied to C:<name>.new. Only when all six copies
 ; are complete are the old programs replaced, so a copy that fails (disk
 ; full, or a break) leaves the installed programs as they were. A .new
 ; file left by an earlier interrupted run is deleted first.
@@ -133,6 +138,15 @@ EndIf
 Copy "sshd-startup" TO "C:sshd-startup.new" QUIET
 If WARN
   Echo "Install-SSH: copying sshd-startup to C: failed."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sftp-server.new"
+  Delete "C:sftp-server.new" QUIET
+EndIf
+Copy "sftp-server" TO "C:sftp-server.new" QUIET
+If WARN
+  Echo "Install-SSH: copying sftp-server to C: failed."
   Skip FAILED
 EndIf
 
@@ -231,6 +245,24 @@ EndIf
 Protect "C:sshd-startup" +rwed
 If WARN
   Echo "Install-SSH: could not set the protection bits of C:sshd-startup."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sftp-server"
+  Delete "C:sftp-server" QUIET
+  If WARN
+    Echo "Install-SSH: could not delete the old C:sftp-server."
+    Skip FAILED
+  EndIf
+EndIf
+Rename "C:sftp-server.new" AS "C:sftp-server"
+If WARN
+  Echo "Install-SSH: could not rename C:sftp-server.new to C:sftp-server."
+  Skip FAILED
+EndIf
+Protect "C:sftp-server" +rwed
+If WARN
+  Echo "Install-SSH: could not set the protection bits of C:sftp-server."
   Skip FAILED
 EndIf
 
@@ -414,6 +446,9 @@ If EXISTS "C:dropbearkey.new"
 EndIf
 If EXISTS "C:sshd-startup.new"
   Delete "C:sshd-startup.new" QUIET
+EndIf
+If EXISTS "C:sftp-server.new"
+  Delete "C:sftp-server.new" QUIET
 EndIf
 Echo "The installation stopped. Fix the problem above and run"
 Echo "Execute Install-SSH again; it continues where it stopped."

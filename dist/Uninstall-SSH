@@ -10,7 +10,8 @@
 ; It removes:
 ;   the block between ";BEGIN amiga-ssh" and ";END amiga-ssh" in
 ;   S:User-Startup (every other line of that file is kept)
-;   C:sshd, C:sshd-console, C:sshpasswd, C:dropbearkey, C:sshd-startup
+;   C:sshd, C:sshd-console, C:sshpasswd, C:dropbearkey, C:sshd-startup,
+;   C:sftp-server
 ; and then asks whether DEVS:Internet/sshd (host keys, config with the
 ; password hash, authorized_keys) should be deleted too. Pressing Return
 ; keeps it. Nothing else is touched; DEVS:Internet itself belongs to the
@@ -103,6 +104,17 @@ If EXISTS "C:dropbearkey"
 EndIf
 If EXISTS "C:dropbearkey.new"
   Delete "C:dropbearkey.new" QUIET
+EndIf
+
+If EXISTS "C:sftp-server"
+  Delete "C:sftp-server" QUIET
+  If WARN
+    Echo "Uninstall-SSH: could not delete C:sftp-server."
+    Skip FAILED
+  EndIf
+EndIf
+If EXISTS "C:sftp-server.new"
+  Delete "C:sftp-server.new" QUIET
 EndIf
 
 If EXISTS "C:sshd-startup"

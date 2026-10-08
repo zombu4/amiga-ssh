@@ -82,7 +82,7 @@
  * every byte. The typedefs below fail to compile otherwise. */
 #define IN_SIZE		512	/* bytes received, not yet processed */
 #define READY_SIZE	1024	/* bytes ready for the reader */
-#define OUT_SIZE	4096	/* bytes waiting to be sent */
+#define OUT_SIZE	16384	/* bytes waiting to be sent */
 typedef char in_size_is_pow2[(IN_SIZE & (IN_SIZE - 1)) == 0 ? 1 : -1];
 typedef char ready_size_is_pow2[(READY_SIZE & (READY_SIZE - 1)) == 0 ? 1 : -1];
 typedef char out_size_is_pow2[(OUT_SIZE & (OUT_SIZE - 1)) == 0 ? 1 : -1];
@@ -395,6 +395,10 @@ static void serve_writes(void)
 
 static void go_gone(void);
 
+/* Bytes handed to the socket so far; move_output() uses it to see whether
+ * a pass made progress. */
+static ULONG bytes_sent;
+
 /* Sends as much buffered output as the socket takes without blocking.
  * EWOULDBLOCK and EINTR mean "later"; any other error means the client
  * cannot be reached any more. */
@@ -410,6 +414,7 @@ static void pump_send(void)
 		if (k > 0) {
 			out_ring.head = (out_ring.head + (ULONG)k) & (out_ring.size - 1);
 			out_ring.count -= (ULONG)k;
+			bytes_sent += (ULONG)k;
 			flush_progress_at = now_secs();
 			continue;
 		}
@@ -420,6 +425,26 @@ static void pump_send(void)
 				go_gone();
 		}
 		break;
+	}
+}
+
+/* Moves queued WRITE data to the socket until the queue is empty or the
+ * socket takes no more. A WRITE larger than the output buffer is taken a
+ * buffer at a time; without this loop each further piece would wait for
+ * the next wake-up of the main loop (up to a second), which made large
+ * writes - SFTP replies of 32 KB - crawl. The pass limit keeps the other
+ * event sources from waiting too long. */
+static void move_output(void)
+{
+	int pass;
+
+	for (pass = 0; pass < 64; pass++) {
+		ULONG before = bytes_sent;
+
+		serve_writes();
+		pump_send();
+		if (list_empty(&writeq) || bytes_sent == before)
+			break;
 	}
 }
 
@@ -1317,6 +1342,9 @@ int main(int argc, char **argv)
 		 * was never started, and this first pass ends the session. */
 		tv.tv_sec = 1;
 		tv.tv_usec = 0;
+		if (!list_empty(&writeq) && output_open()
+		    && out_ring.count < out_ring.size)
+			tv.tv_sec = 0;	/* more WRITE data to take: poll only */
 		n = 0;
 		if (SocketBase != NULL) {
 			n = WaitSelect(want_rd || want_wr ? sock + 1 : 0,
@@ -1343,8 +1371,7 @@ int main(int argc, char **argv)
 		check_helper();
 		process_input();
 		serve_reads();
-		serve_writes();
-		pump_send();
+		move_output();
 
 		now = now_secs();
 		if (!finishing && session_over(now)) {

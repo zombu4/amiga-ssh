@@ -160,6 +160,72 @@ The process-handling design follows the approach used by telnetd for AmigaOS (gi
 Johansen). That design calls `SystemTags()` from a helper that blocks until
 the shell exits, never from the daemon. No code is taken from it.
 
+## File transfer (SFTP)
+
+SFTP is an SSH subsystem: for a channel that asks for `sftp`, Dropbear runs
+`SFTPSERVER_PATH` (svr-chansession.c:696-704) as an `exec` command, which
+goes through the console handler like any other command. In its
+non-terminal mode the handler passes bytes unchanged; measured on the
+reference machine, all 256 byte values and 1 MB of random data came back
+byte-identical through a program that copies its input to its output with
+`Read()`/`Write()`.
+
+`sftp-server` (port/amiga_sftp.c) is the port's own SFTP server, written
+for AmigaOS with dos.library calls only. It speaks protocol version 3
+(draft-ietf-secsh-filexfer-02), which is what OpenSSH's `sftp` client and
+its `scp` (OpenSSH 9.0 and later use SFTP for `scp`) speak. It reads
+requests from `Input()` and answers on `Output()`, one request at a time.
+
+Paths. SFTP clients expect one tree under `/`; AmigaOS has volumes and
+assigns. The mapping is purely textual:
+
+| SFTP path | AmigaOS |
+|---|---|
+| `/` | a virtual directory listing the mounted volumes and the assigns |
+| `/Work` | `Work:` |
+| `/Work/dir/file` | `Work:dir/file` |
+| relative paths | relative to the account's `home=` directory |
+
+`.` and `..` are resolved in the text before the mapping, so `..` never
+leaves `/`. A component that contains `:` is refused. `REALPATH` returns
+the resolved SFTP path; `REALPATH .` returns the home directory, which is
+where clients start.
+
+Attributes. Size comes from the FileInfoBlock. Permissions are built from
+the protection bits: the owner bits from the inverted `FIBF_READ`,
+`FIBF_WRITE` and `FIBF_EXECUTE`, the group and other bits from the
+`FIBF_GRP_*` and `FIBF_OTR_*` bits, plus the file-type bits for files and
+directories. The modification time is the DateStamp converted to seconds
+since 1970 (`(days + 2922) * 86400 + minutes * 60 + ticks / 50`; 2922 days
+lie between 1970-01-01 and 1978-01-01). AmigaOS keeps local time, so times
+are shown as if the Amiga clock ran on UTC. `SETSTAT` changes the
+protection bits (`SetProtection()`), the date (`SetFileDate()`) and the
+size (`SetFileSize()`); owner and group do not exist and are ignored.
+
+Requests. `OPEN` maps the flags to `MODE_OLDFILE` (read, or write without
+create), `MODE_READWRITE` (create without truncate) or `MODE_NEWFILE`
+(truncate); `EXCL` first checks that the name is free. `READ` and `WRITE`
+seek only when the offset differs from the current position. `OPENDIR` and
+`READDIR` use `Examine()`/`ExNext()` and send up to 64 names per reply.
+`REMOVE` and `RMDIR` use `DeleteFile()`, `MKDIR` `CreateDir()`, `RENAME`
+`Rename()` (which, like SFTP version 3, refuses an existing target).
+`READLINK` and `SYMLINK` answer `OP_UNSUPPORTED`; soft links
+(`ST_SOFTLINK`, which has a positive entry type like a directory) are
+listed as symbolic links, not as directories. DOS errors map to
+`NO_SUCH_FILE` (object or directory not found), `PERMISSION_DENIED`
+(protected or write-protected) or `FAILURE` with the DOS error text.
+Requesters are off (`pr_WindowPtr = -1`), so a missing volume is an error,
+never a wait.
+
+Throughput. The first measurement took 247 s to download 1 MB. The cause
+was in the console handler: a WRITE larger than its output buffer (then
+4 KB) was taken one buffer at a time, and after each piece the handler
+slept until its next wake-up, up to a second. It now keeps taking and
+sending until the WRITE is done or the socket is full, does not sleep
+while WRITE data waits, and has a 16 KB buffer. Measured afterwards on the
+reference machine: 1 MB up in 6.8 s and down in 5.2 s, each including
+about 2.8 s of login.
+
 ## Randomness
 
 Upstream refuses to start without its random device (dbrandom.c:259-262);

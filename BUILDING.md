@@ -157,15 +157,15 @@ AMIGA_PREFIX=/opt/amiga ./build.sh
    the `PORT_SVROBJS` and `PORT_KEYOBJS` variables (patch 0008), linking
    libnix's socket library (`-lsocket`) and writing a link map for each
    program. The log goes to `build/make.log`.
-7. **Builds the helper programs** `sshd-console`, `sshpasswd` and
-   `sshd-startup` (see the table below).
+7. **Builds the helper programs** `sshd-console`, `sshpasswd`,
+   `sshd-startup` and `sftp-server` (see the table below).
 8. **Checks** the unstripped programs and stops on any failure:
    - `nm` must show none of `fork`, `vfork`, `execv`, `execve`, `execvp`,
      `execl`, `execlp`, `execle`, `pipe`, `link`, `symlink`;
    - the link maps must show none of libnix's `select.o`, `fcntl.o`,
      `getpwent.o`, `__inituser.o` or `system.o`.
 9. **Installs** stripped copies into `dist/` as `sshd`, `dropbearkey`,
-   `sshd-console`, `sshpasswd` and `sshd-startup`. The other files in
+   `sshd-console`, `sshpasswd`, `sshd-startup` and `sftp-server`. The other files in
    `dist/` (`Install-SSH`, `Uninstall-SSH`, `shell-startup`, the licence
    files) are not touched.
 10. **Checks `dist/`**: no file may contain the builder's home directory or
@@ -185,6 +185,7 @@ prebuilt programs ship in the repository.
 | `sshd-console` | `port/amiga_console.c` alone, + libnix (it calls bsdsocket.library itself). `sshd` loads it at run time from `PROGDIR:sshd-console`, then `C:sshd-console`, and gives it its stack when it starts it. |
 | `sshpasswd` | `port/amiga_passwd.c`, `amiga_rewrite.c`, `amiga_crypt.c`, `amiga_random.c`, `amiga_stack.c` (32 KB) + libtomcrypt's `src/hashes/sha2/sha256.o` and `src/misc/crypt/crypt_argchk.o` from the Dropbear build + libnix |
 | `sshd-startup` | `port/amiga_startup.c`, `amiga_rewrite.c`, `amiga_stack.c` (32 KB) + libnix |
+| `sftp-server` | `port/amiga_sftp.c`, `amiga_stack.c` (32 KB) + libnix (dos.library only) |
 
 ## libnix defects the port works around
 

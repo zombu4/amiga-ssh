@@ -64,8 +64,11 @@
 /* No X server. */
 #define DROPBEAR_X11FWD 0
 
-/* No sftp-server program exists for AmigaOS. */
-#define DROPBEAR_SFTPSERVER 0
+/* File transfer: for the "sftp" subsystem Dropbear runs this program
+ * (svr-chansession.c, sessioncommand), the port's own SFTP server
+ * (port/amiga_sftp.c). */
+#define DROPBEAR_SFTPSERVER 1
+#define SFTPSERVER_PATH "C:sftp-server"
 
 /* The message of the day is a Unix file (/etc/motd). */
 #define DO_MOTD 0

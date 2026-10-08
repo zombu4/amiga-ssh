@@ -58,6 +58,25 @@ You get an AmigaDOS shell. Leave it with `EndShell`, or with `exit` or
 `logout`, which SSH sessions add as aliases (see
 `DEVS:Internet/sshd/shell-startup`, which runs your `S:Shell-Startup` first).
 
+## Copying files (SFTP)
+
+Any SFTP client works, for example from a Mac or Linux:
+
+```
+sftp amiga@<address of the Amiga>
+```
+
+The Amiga appears as one tree: `/` lists the mounted volumes and the
+assigns, `/Work/Projects` is `Work:Projects`, and a session starts in the
+`home=` directory (`SYS:` by default). Upload with `put`, download with
+`get`. OpenSSH 9.0 and later send `scp` through SFTP too, so
+`scp file amiga@<address>:/RAM/` copies to `RAM:` (not tested yet).
+Graphical SFTP clients (FileZilla, Cyberduck, WinSCP) use the same
+protocol but have not been tested.
+
+Measured with OpenSSH's `sftp` on an A2000 with PiStorm, after login: 1 MB
+up in about 4 seconds, 1 MB down in about 2.5 seconds.
+
 ## Changing the password
 
 On the Amiga, type
@@ -95,6 +114,7 @@ Every key in that file logs in as the one account.
 | `C:sshd-console` | the console handler that connects a shell to an SSH session |
 | `C:sshpasswd` | sets the login password |
 | `C:dropbearkey` | generates host keys |
+| `C:sftp-server` | the SFTP file transfer server `sshd` starts for `sftp` and `scp` |
 | `C:sshd-startup` | adds or removes the start command in `S:User-Startup` (used by the install scripts) |
 | `DEVS:Internet/sshd/config` | login name (`user=`), home directory (`home=`), password hash (`password=`) |
 | `DEVS:Internet/sshd/authorized_keys` | public keys allowed to log in |
@@ -120,8 +140,9 @@ stops at the next reboot.
 
 ## Limitations
 
-- No file transfer yet: SFTP is compiled out (there is no `sftp-server`
-  for AmigaOS) and there is no `scp` program for the Amiga side.
+- SFTP: symbolic links can be listed but not created or read
+  (`readlink`/`symlink` are not supported), and files must stay under
+  2 GB (AmigaOS 3.x file positions are 32-bit).
 - For an interactive shell the exit status the client receives is that of
   `NewShell`, not of the last command typed. `ssh amiga@<address> <command>`
   returns the command's real return code.

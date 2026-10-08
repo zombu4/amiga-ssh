@@ -22,6 +22,7 @@
 #   sshd-console  the console handler the server starts for each shell
 #   sshpasswd     changes the login password
 #   sshd-startup  edits S:User-Startup for Install-SSH and Uninstall-SSH
+#   sftp-server   the SFTP file transfer server
 #
 # Everything else in dist/ (Install-SSH, Uninstall-SSH, the licence files)
 # is left as it is. Any failed step or check stops the script with an
@@ -99,7 +100,8 @@ command -v make >/dev/null 2>&1 || fail "make is not installed"
 # Every port source the build needs must be present.
 for f in amiga_main.c amiga_net.c amiga_user.c amiga_random.c \
 		amiga_crypt.c amiga_session.c amiga_console.c amiga_passwd.c \
-		amiga_rewrite.c amiga_startup.c amiga_stack.c amiga_log.c localoptions.h; do
+		amiga_rewrite.c amiga_startup.c amiga_stack.c amiga_log.c amiga_sftp.c \
+		localoptions.h; do
 	[ -f "$PORT/$f" ] || fail "missing port/$f"
 done
 
@@ -186,7 +188,7 @@ PORT_CFLAGS="$CFLAGS_COMMON -Wundef -fno-strict-overflow -Wno-pointer-sign"
 PORT_CPPFLAGS="-DLOCALOPTIONS_H_EXISTS -DDROPBEAR_SERVER -I$PORT -I$SRC -I$SRC/src -I$SRC/libtomcrypt/src/headers -I$SRC/libtommath"
 for f in amiga_main amiga_net amiga_user amiga_random amiga_crypt \
 		amiga_session amiga_console amiga_passwd amiga_rewrite \
-		amiga_startup amiga_log; do
+		amiga_startup amiga_log amiga_sftp; do
 	echo "    $f.c"
 	$CC $PORT_CFLAGS $PORT_CPPFLAGS -c "$PORT/$f.c" -o "$OBJ/$f.o"
 done
@@ -241,6 +243,12 @@ $CC -o "$BUILD/sshpasswd" "$OBJ/amiga_passwd.o" "$OBJ/amiga_rewrite.o" \
 	"$LTC/hashes/sha2/sha256.o" "$LTC/misc/crypt/crypt_argchk.o" \
 	-Wl,-Map,"$BUILD/sshpasswd.map"
 
+# sftp-server: the SFTP server sshd runs for file transfer; dos.library
+# only, so it needs nothing but its own object and the stack size.
+step "Building sftp-server"
+$CC -o "$BUILD/sftp-server" "$OBJ/amiga_sftp.o" "$OBJ/amiga_stack_small.o" \
+	-Wl,-Map,"$BUILD/sftp-server.map"
+
 # sshd-startup: edits S:User-Startup for the installer.
 step "Building sshd-startup"
 $CC -o "$BUILD/sshd-startup" "$OBJ/amiga_startup.o" "$OBJ/amiga_rewrite.o" \
@@ -253,7 +261,8 @@ PROGRAMS="sshd:$SRC/dropbear:$SRC/dropbear.map
 dropbearkey:$SRC/dropbearkey:$SRC/dropbearkey.map
 sshd-console:$BUILD/sshd-console:$BUILD/sshd-console.map
 sshpasswd:$BUILD/sshpasswd:$BUILD/sshpasswd.map
-sshd-startup:$BUILD/sshd-startup:$BUILD/sshd-startup.map"
+sshd-startup:$BUILD/sshd-startup:$BUILD/sshd-startup.map
+sftp-server:$BUILD/sftp-server:$BUILD/sftp-server.map"
 
 # ---- 8. check the unstripped programs -------------------------------------------
 
