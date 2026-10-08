@@ -142,6 +142,26 @@ static ULONG line_len;
 static int last_in_cr;			/* previous input byte was CR */
 static int last_out_cr;			/* previous output byte was CR */
 static int eof_mark;			/* Ctrl-\ typed on an empty line */
+
+/* Control sequences in the program's output (terminal sessions only). A
+ * sequence is collected until its final byte, so the ones that are
+ * private to the Amiga console can be answered here instead of being sent
+ * to the client's terminal (console.doc, private Amiga sequences):
+ *   <CSI>0 q   window status request: answered with the window bounds
+ *   <CSI>n{    set raw events, <CSI>n}  reset raw events: n = 12 asks
+ *              for a report when the window is resized
+ * A client terminal would read <CSI>0 q as "set cursor style". */
+#define SEQ_MAX 24
+static UBYTE seq[SEQ_MAX];		/* parameters and intermediates */
+static int seq_len;
+static int out_state;			/* 0 text, 1 after ESC, 2 in a sequence */
+static int wsr_pending;			/* a window status request to answer */
+static int resize_events;		/* the program asked for class 12 */
+static int resize_pending;		/* a resize report to deliver */
+
+/* Raw input event class for "window resized" (devices/inputevent.h,
+ * IECLASS_SIZEWINDOW). */
+#define EVENT_RESIZE 12
 static int input_eof;			/* the client sent EOF (recv() == 0) */
 static int gone;			/* the client cannot be reached */
 static ULONG gone_at;
@@ -323,10 +343,64 @@ static void echo(const char *s, ULONG n)
 		ring_put(&out_ring, (UBYTE)s[i]);
 }
 
+/* Puts one byte of ordinary terminal output: LF not preceded by CR becomes
+ * CR LF. The caller made sure there are 2 bytes of room. */
+static void put_text(UBYTE c)
+{
+	if (c == CH_LF && !last_out_cr) {
+		ring_put(&out_ring, CH_CR);
+		ring_put(&out_ring, CH_LF);
+	} else {
+		ring_put(&out_ring, c);
+	}
+	last_out_cr = (c == CH_CR);
+}
+
+/* 1 if the collected parameters (seq, seq_len) list the number n. */
+static int seq_has_param(int n)
+{
+	int i = 0;
+
+	while (i < seq_len) {
+		int v = 0, digits = 0;
+
+		while (i < seq_len && seq[i] >= '0' && seq[i] <= '9') {
+			v = v * 10 + (seq[i] - '0');
+			i++;
+			digits++;
+		}
+		if (digits > 0 && v == n)
+			return 1;
+		while (i < seq_len && seq[i] != ';')
+			i++;
+		i++;			/* past ';' */
+	}
+	return 0;
+}
+
+/* Acts on a complete sequence with final byte c. Returns 1 if it was an
+ * Amiga-private one that is answered here, 0 if it goes to the client. */
+static int private_sequence(UBYTE c)
+{
+	if (c == 'q' && ((seq_len == 2 && seq[0] == '0' && seq[1] == ' ')
+			 || (seq_len == 1 && seq[0] == ' '))) {
+		wsr_pending = 1;
+		return 1;
+	}
+	if (c == '{' || c == '}') {
+		if (seq_has_param(EVENT_RESIZE))
+			resize_events = (c == '{');
+		return 1;	/* raw events have no meaning for the client */
+	}
+	return 0;
+}
+
 /* Moves up to n bytes of program output into the output buffer and returns
- * how many it took. With a terminal, LF not preceded by CR becomes CR LF and
+ * how many it took. With a terminal, LF not preceded by CR becomes CR LF,
  * the Amiga CSI byte becomes ESC '[' (console.doc: "CSI is either 9B or
- * Esc["), so the client's terminal sees the 7-bit form. */
+ * Esc["), so the client's terminal sees the 7-bit form, and the
+ * Amiga-private sequences above are answered here. A sequence split
+ * between two writes is completed by the next one. */
 static LONG take_output(const UBYTE *p, LONG n)
 {
 	LONG i;
@@ -334,23 +408,66 @@ static LONG take_output(const UBYTE *p, LONG n)
 	for (i = 0; i < n; i++) {
 		UBYTE c = p[i];
 
-		if (pty) {
-			if (ring_free(&out_ring) < 2)
-				break;
-			if (c == CH_LF && !last_out_cr) {
-				ring_put(&out_ring, CH_CR);
-				ring_put(&out_ring, CH_LF);
-			} else if (c == CH_CSI) {
-				ring_put(&out_ring, CH_ESC);
-				ring_put(&out_ring, '[');
-			} else {
-				ring_put(&out_ring, c);
-			}
-			last_out_cr = (c == CH_CR);
-		} else {
+		if (!pty) {
 			if (ring_free(&out_ring) < 1)
 				break;
 			ring_put(&out_ring, c);
+			continue;
+		}
+		if (out_state == 0) {
+			if (c == CH_ESC) {
+				out_state = 1;
+			} else if (c == CH_CSI) {
+				out_state = 2;
+				seq_len = 0;
+			} else {
+				if (ring_free(&out_ring) < 2)
+					break;
+				put_text(c);
+			}
+		} else if (out_state == 1) {
+			if (c == '[') {
+				out_state = 2;
+				seq_len = 0;
+			} else {
+				/* A lone ESC: send it, then this byte as text. */
+				if (ring_free(&out_ring) < 3)
+					break;
+				ring_put(&out_ring, CH_ESC);
+				out_state = 0;
+				if (c == CH_ESC)
+					out_state = 1;
+				else if (c == CH_CSI) {
+					out_state = 2;
+					seq_len = 0;
+				} else
+					put_text(c);
+			}
+		} else if (c >= 0x20 && c <= 0x3f && seq_len < SEQ_MAX) {
+			seq[seq_len++] = c;	/* parameter or intermediate */
+		} else {
+			/* Final byte (0x40-0x7e), or a sequence too long or broken
+			 * to be one: pass it on unless it is answered here. */
+			int final = (c >= 0x40 && c <= 0x7e);
+
+			if (ring_free(&out_ring) < (ULONG)seq_len + 4)
+				break;
+			out_state = 0;
+			if (final && private_sequence(c))
+				continue;
+			ring_put(&out_ring, CH_ESC);
+			ring_put(&out_ring, '[');
+			{
+				int k;
+
+				for (k = 0; k < seq_len; k++)
+					ring_put(&out_ring, seq[k]);
+			}
+			if (final)
+				ring_put(&out_ring, c);
+			else
+				put_text(c);
+			last_out_cr = 0;
 		}
 	}
 	return i;
@@ -535,6 +652,65 @@ static void cooked_byte(UBYTE c)
 			echo((const char *)&c, 1);
 		}
 		break;
+	}
+}
+
+/* Puts the answers to Amiga-private sequences into the reader's input, as
+ * the console device would (console.doc; AmigaOS wiki, Console Device):
+ *   window bounds report  <CSI>1;1;<rows>;<columns> r
+ *   window resized        <CSI>12;0;0;0;0;0;0;0|
+ * The size is the one the client sent (pty-req, window-change), 24 rows
+ * by 80 columns if it sent none. */
+/* Puts the decimal digits of v (0 or more) into the reader's buffer. */
+static void put_number(LONG v)
+{
+	char d[12];
+	int n = 0;
+
+	do {
+		d[n++] = (char)('0' + v % 10);
+		v /= 10;
+	} while (v > 0 && n < (int)sizeof(d));
+	while (n > 0)
+		ring_put(&ready_ring, (UBYTE)d[--n]);
+}
+
+/* Puts a string into the reader's buffer. */
+static void put_string(const char *s)
+{
+	while (*s != '\0')
+		ring_put(&ready_ring, (UBYTE)*s++);
+}
+
+/* Room a report needs: CSI, two numbers of at most 10 digits, text. */
+#define REPORT_ROOM 40
+
+static void deliver_reports(void)
+{
+	LONG cols, rows;
+
+	if (resize_pending && ring_free(&ready_ring) >= REPORT_ROOM) {
+		ring_put(&ready_ring, CH_CSI);
+		put_number(EVENT_RESIZE);
+		put_string(";0;0;0;0;0;0;0|");
+		resize_pending = 0;
+	}
+	if (wsr_pending && ring_free(&ready_ring) >= REPORT_ROOM) {
+		Forbid();
+		cols = blk->cols;
+		rows = blk->rows;
+		Permit();
+		if (cols <= 0)
+			cols = 80;
+		if (rows <= 0)
+			rows = 24;
+		ring_put(&ready_ring, CH_CSI);
+		put_string("1;1;");
+		put_number(rows);
+		ring_put(&ready_ring, ';');
+		put_number(cols);
+		put_string(" r");
+		wsr_pending = 0;
 	}
 }
 
@@ -1023,11 +1199,17 @@ static void poll_block(void)
 	ULONG bits;
 	LONG attached;
 
+	LONG resized;
+
 	Forbid();
 	bits = blk->break_bits;
 	blk->break_bits = 0;
 	attached = blk->attached;
+	resized = blk->winsize_changed;
+	blk->winsize_changed = 0;
 	Permit();
+	if (resized && resize_events)
+		resize_pending = 1;	/* the program asked to hear of it */
 	if (bits != 0)
 		send_break(bits);
 	if (!attached)
@@ -1370,6 +1552,8 @@ int main(int argc, char **argv)
 		}
 		check_helper();
 		process_input();
+		move_output();
+		deliver_reports();
 		serve_reads();
 		move_output();
 

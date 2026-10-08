@@ -145,9 +145,18 @@ bytes straight through once the shell switches the console to raw mode; it
 turns Ctrl-C/D/E/F into break signals for the shell and LF into CR LF on
 output, as the Amiga console does. Without a terminal it passes bytes
 through unchanged. The upstream pty path (`pty_allocate`, `tcsetattr`,
-`TIOCSWINSZ`, utmp) is replaced, not emulated. The window size from the
-client is stored in the control block; the handler does not yet answer a
-program's window-size query with it.
+`TIOCSWINSZ`, utmp) is replaced, not emulated. Full-screen programs learn the
+size of the client's window as they would from the Amiga console
+(console.doc, private Amiga sequences): the handler answers the window
+status request `<CSI>0 q` with the window bounds report
+`<CSI>1;1;<rows>;<columns> r`, using the size from `pty-req` and
+`window-change` (24 by 80 if the client sent none), and a program that
+enabled resize reports with `<CSI>12{` receives `<CSI>12;0;0;0;0;0;0;0|`
+when the client's window changes size. These Amiga-private sequences are
+not sent to the client, whose terminal would read `<CSI>0 q` as "set
+cursor style". Measured on the reference machine: a test program saw
+`1;1;30;100` in a 100 by 30 terminal, then the resize report and
+`1;1;40;132` after the terminal was resized to 132 by 40.
 
 `NewShell` runs the new shell asynchronously (dos.doc, SystemTagList,
 lines 5884-5888), so for an interactive shell `SystemTags()` returns as soon

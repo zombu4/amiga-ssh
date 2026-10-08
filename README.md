@@ -154,8 +154,6 @@ stops at the next reboot.
   `NewShell`, not of the last command typed. `ssh amiga@<address> <command>`
   returns the command's real return code.
 - No environment variables (such as `TERM`) are passed to the shell.
-- The terminal size the client sends is stored, but programs on the Amiga
-  cannot ask for it yet.
 - Port forwarding is built in but has not been tested.
 - A connection that a client keeps open (for example through OpenSSH's
   `ControlMaster`/`ControlPersist` connection sharing) keeps its session
