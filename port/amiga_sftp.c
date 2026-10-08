@@ -727,7 +727,18 @@ struct handle {
 	int done;			/* H_DIR, H_ROOT: listing finished */
 	char (*root)[ROOT_NAME_LEN];	/* H_ROOT: names of the virtual "/" */
 	int root_count, root_next;
+	/* H_FILE opened to replace a file's contents (upload): the data goes
+	 * to temp_path next to final_path and takes its name on CLOSE. Both
+	 * NULL for every other handle. */
+	char *final_path, *temp_path;
+	int perm_set;			/* the client set permissions itself */
 };
+
+/* Suffixes of the upload's temporary name and of the previous version
+ * while the two are swapped (same directory, so the swap is a rename,
+ * never a second copy). */
+#define TEMP_SUFFIX ".sftp-partial"
+#define OLD_SUFFIX  ".sftp-old"
 
 static struct handle handles[MAX_HANDLES];
 
@@ -772,11 +783,94 @@ static struct handle *get_handle(struct req *r, int *idx)
 	return &handles[i];
 }
 
-static void close_handle(struct handle *h)
+/* A new buffer holding s followed by suffix, or NULL. */
+static char *path_with(const char *s, const char *suffix)
 {
+	ULONG n = strlen(s), m = strlen(suffix);
+	char *p = AllocVec(n + m + 1, MEMF_ANY);
+
+	if (p != NULL) {
+		memcpy(p, s, n);
+		memcpy(p + n, suffix, m + 1);
+	}
+	return p;
+}
+
+/* 1 if an object called name exists. */
+static int path_exists(const char *name)
+{
+	BPTR lock = Lock((CONST_STRPTR)name, SHARED_LOCK);
+
+	if (lock == 0)
+		return 0;
+	UnLock(lock);
+	return 1;
+}
+
+/* Gives a finished upload its real name. An existing file of that name is
+ * renamed aside first and deleted only after the upload took its place;
+ * if anything fails, it is put back, so a failed upload never destroys
+ * the previous version. The previous version's protection bits carry over
+ * unless the client set its own. Returns 0, or the DOS error. */
+static LONG finish_upload(struct handle *h)
+{
+	char *old = path_with(h->final_path, OLD_SUFFIX);
+	LONG err = 0, prot = 0;
+	int had_old, have_prot = 0;
+
+	if (old == NULL)
+		return ERROR_NO_FREE_STORE;
+	had_old = path_exists(h->final_path);
+	if (had_old) {
+		struct FileInfoBlock *fib = examine_path(h->final_path);
+
+		if (fib != NULL) {
+			prot = fib->fib_Protection;
+			have_prot = 1;
+			FreeDosObject(DOS_FIB, fib);
+		}
+		if (path_exists(old))
+			DeleteFile((CONST_STRPTR)old);	/* left by a crash */
+		if (!Rename((CONST_STRPTR)h->final_path, (CONST_STRPTR)old)) {
+			err = IoErr();
+			goto out;
+		}
+	}
+	if (!Rename((CONST_STRPTR)h->temp_path, (CONST_STRPTR)h->final_path)) {
+		err = IoErr();
+		if (had_old)
+			Rename((CONST_STRPTR)old, (CONST_STRPTR)h->final_path);
+		goto out;
+	}
+	if (had_old)
+		DeleteFile((CONST_STRPTR)old);
+	if (have_prot && !h->perm_set)
+		SetProtection((CONST_STRPTR)h->final_path, prot);
+out:
+	FreeVec(old);
+	return err;
+}
+
+/* Closes a handle. For an upload, commit nonzero gives the file its real
+ * name (CLOSE); zero deletes the unfinished temporary file (the session
+ * ended without CLOSE). Returns 0, or the DOS error of the commit. */
+static LONG close_handle(struct handle *h, int commit)
+{
+	LONG err = 0;
+
 	switch (h->type) {
 	case H_FILE:
 		Close(h->fh);
+		if (h->temp_path != NULL) {
+			if (commit)
+				err = finish_upload(h);
+			if (!commit || err != 0)
+				DeleteFile((CONST_STRPTR)h->temp_path);
+			FreeVec(h->temp_path);
+			FreeVec(h->final_path);
+			h->temp_path = NULL;
+			h->final_path = NULL;
+		}
 		break;
 	case H_DIR:
 		FreeDosObject(DOS_FIB, h->fib);
@@ -787,6 +881,7 @@ static void close_handle(struct handle *h)
 		break;
 	}
 	h->type = H_FREE;
+	return err;
 }
 
 /* ---- the virtual "/" ---------------------------------------------------- */
@@ -852,6 +947,36 @@ static int list_root(char (*names)[ROOT_NAME_LEN])
 /* Each do_* handles one request type. It returns 0 only if the reply could
  * not be written, which ends the server. */
 
+/* Buffer for copying a file into an upload's temporary file. Static and
+ * small, so a copy never holds more than this in RAM. */
+static UBYTE copy_buf[16384];
+
+/* Copies the file src to the open handle dst, from the start. Returns 0,
+ * or the DOS error. */
+static LONG copy_into(const char *src, BPTR dst)
+{
+	BPTR in = Open((CONST_STRPTR)src, MODE_OLDFILE);
+	LONG n, err = 0;
+
+	if (in == 0)
+		return IoErr();
+	for (;;) {
+		n = Read(in, copy_buf, sizeof(copy_buf));
+		if (n < 0) {
+			err = IoErr();
+			break;
+		}
+		if (n == 0)
+			break;
+		if (Write(dst, copy_buf, n) != n) {
+			err = IoErr();
+			break;
+		}
+	}
+	Close(in);
+	return err;
+}
+
 static int do_open(ULONG id, struct req *r)
 {
 	char sftp[PATH_MAX_LEN], apath[PATH_MAX_LEN];
@@ -888,14 +1013,68 @@ static int do_open(ULONG id, struct req *r)
 	idx = alloc_handle();
 	if (idx < 0)
 		return send_status_msg(id, SSH_FX_FAILURE, "Too many open handles");
-	fh = Open((CONST_STRPTR)apath, mode);
-	if (fh == 0)
-		return send_dos_error(id, IoErr());
-	if ((a.flags & SSH_FILEXFER_ATTR_PERMISSIONS)
-	    && (mode == MODE_NEWFILE || mode == MODE_READWRITE))
-		SetProtection((CONST_STRPTR)apath, perm_to_prot(a.perm, 0));
-
 	h = &handles[idx];
+
+	if ((pflags & SSH_FXF_WRITE) && !(pflags & SSH_FXF_APPEND)) {
+		/* Writing (an upload): the data goes to a temporary file next to
+		 * the destination, and CLOSE gives it the real name. An
+		 * interrupted upload then never leaves a half-written file under
+		 * the real name, and nothing is held in RAM.
+		 * Without TRUNC a client may change only parts of the file (and
+		 * OpenSSH's scp opens this way, then sets the size at the end:
+		 * scp.c calls sftp_upload with inplace 1), so the temporary file
+		 * starts as a copy of an existing destination. Without TRUNC and
+		 * without CREAT the destination must exist. APPEND (resuming an
+		 * upload) writes in place, as resuming means. */
+		int exists = path_exists(apath);
+
+		if (!exists && !(pflags & SSH_FXF_CREAT))
+			return send_dos_error(id, ERROR_OBJECT_NOT_FOUND);
+		h->final_path = path_with(apath, "");
+		h->temp_path = path_with(apath, TEMP_SUFFIX);
+		if (h->final_path == NULL || h->temp_path == NULL) {
+			if (h->final_path != NULL)
+				FreeVec(h->final_path);
+			if (h->temp_path != NULL)
+				FreeVec(h->temp_path);
+			h->final_path = h->temp_path = NULL;
+			return send_dos_error(id, ERROR_NO_FREE_STORE);
+		}
+		fh = Open((CONST_STRPTR)h->temp_path, MODE_NEWFILE);
+		if (fh != 0 && exists && !(pflags & SSH_FXF_TRUNC)) {
+			LONG err = copy_into(apath, fh);
+
+			if (err == 0 && Seek(fh, 0, OFFSET_BEGINNING) == -1)
+				err = IoErr();
+			if (err != 0) {
+				Close(fh);
+				DeleteFile((CONST_STRPTR)h->temp_path);
+				FreeVec(h->temp_path);
+				FreeVec(h->final_path);
+				h->temp_path = h->final_path = NULL;
+				return send_dos_error(id, err);
+			}
+		}
+	} else {
+		fh = Open((CONST_STRPTR)apath, mode);
+	}
+	if (fh == 0) {
+		LONG err = IoErr();
+
+		if (h->temp_path != NULL) {
+			FreeVec(h->temp_path);
+			FreeVec(h->final_path);
+			h->temp_path = h->final_path = NULL;
+		}
+		return send_dos_error(id, err);
+	}
+	if ((a.flags & SSH_FILEXFER_ATTR_PERMISSIONS)
+	    && (h->temp_path != NULL || mode == MODE_READWRITE)) {
+		SetProtection((CONST_STRPTR)(h->temp_path ? h->temp_path : apath),
+			perm_to_prot(a.perm, 0));
+		h->perm_set = 1;
+	}
+
 	h->type = H_FILE;
 	h->fh = fh;
 	h->pos = 0;
@@ -912,9 +1091,13 @@ static int do_close(ULONG id, struct req *r)
 {
 	struct handle *h = get_handle(r, NULL);
 
+	LONG err;
+
 	if (h == NULL)
 		return send_status(id, SSH_FX_FAILURE);
-	close_handle(h);
+	err = close_handle(h, 1);
+	if (err != 0)
+		return send_dos_error(id, err);
 	return send_status(id, SSH_FX_OK);
 }
 
@@ -1131,6 +1314,8 @@ static int do_fsetstat(ULONG id, struct req *r)
 		return send_status(id, SSH_FX_BAD_MESSAGE);
 	if (!NameFromFH(h->fh, (STRPTR)apath, sizeof(apath)))
 		return send_dos_error(id, IoErr());
+	if (a.flags & SSH_FILEXFER_ATTR_PERMISSIONS)
+		h->perm_set = 1;
 	return apply_attrs(id, apath, h->fh, &a);
 }
 
@@ -1418,8 +1603,10 @@ int main(void)
 	}
 
 	for (i = 0; i < MAX_HANDLES; i++) {
+		/* The session ended without CLOSE: unfinished uploads are
+		 * deleted, never given the real name. */
 		if (handles[i].type != H_FREE)
-			close_handle(&handles[i]);
+			close_handle(&handles[i], 0);
 	}
 	if (pkt != NULL)
 		FreeVec(pkt);

@@ -69,13 +69,20 @@ sftp amiga@<address of the Amiga>
 The Amiga appears as one tree: `/` lists the mounted volumes and the
 assigns, `/Work/Projects` is `Work:Projects`, and a session starts in the
 `home=` directory (`SYS:` by default). Upload with `put`, download with
-`get`. OpenSSH 9.0 and later send `scp` through SFTP too, so
-`scp file amiga@<address>:/RAM/` copies to `RAM:` (not tested yet).
-Graphical SFTP clients (FileZilla, Cyberduck, WinSCP) use the same
-protocol but have not been tested.
+`get`. `scp` works too (OpenSSH 9.0 and later send it through SFTP):
+`scp file amiga@<address>:/Work/` copies to `Work:`. Graphical SFTP clients
+(FileZilla, Cyberduck, WinSCP) use the same protocol but have not been
+tested.
 
-Measured with OpenSSH's `sftp` on an A2000 with PiStorm, after login: 1 MB
-up in about 4 seconds, 1 MB down in about 2.5 seconds.
+Uploads are written to a temporary file next to the destination
+(`<name>.sftp-partial`) and take the real name only when complete, so an
+interrupted upload leaves the existing file as it was. The data goes
+straight to the destination's disk, never into RAM.
+
+Measured on an A2000 with PiStorm, after login: 1 MB up in about 4
+seconds, 1 MB down in about 2.5 seconds, 20 MB to the hard disk in about 80
+seconds; a transfer uses about 650 KB of fast RAM and no chip RAM,
+whatever the file size.
 
 ## Changing the password
 

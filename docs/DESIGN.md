@@ -202,9 +202,19 @@ are shown as if the Amiga clock ran on UTC. `SETSTAT` changes the
 protection bits (`SetProtection()`), the date (`SetFileDate()`) and the
 size (`SetFileSize()`); owner and group do not exist and are ignored.
 
-Requests. `OPEN` maps the flags to `MODE_OLDFILE` (read, or write without
-create), `MODE_READWRITE` (create without truncate) or `MODE_NEWFILE`
-(truncate); `EXCL` first checks that the name is free. `READ` and `WRITE`
+Requests. `OPEN` for reading uses `MODE_OLDFILE`. Every `OPEN` that
+writes, except with `APPEND`, writes to a temporary file next to the
+destination (`<name>.sftp-partial`); `CLOSE` gives it the real name: an
+existing file is renamed aside (`<name>.sftp-old`), the upload takes its
+name, then the old one is deleted, and if anything fails the old one is put
+back. A session that ends without `CLOSE` deletes the temporary file, so an
+interrupted upload leaves the destination as it was. Without `TRUNC` the
+temporary file starts as a copy of the destination, because such a client
+may change only parts of it; OpenSSH's `scp` opens this way and sets the
+size at the end (scp.c calls `sftp_upload` with its in-place flag set). The
+copy streams through a 16 KB buffer, so nothing is held in RAM. `APPEND`
+(resuming an upload) writes in place. `EXCL` first checks that the name is
+free. `READ` and `WRITE`
 seek only when the offset differs from the current position. `OPENDIR` and
 `READDIR` use `Examine()`/`ExNext()` and send up to 64 names per reply.
 `REMOVE` and `RMDIR` use `DeleteFile()`, `MKDIR` `CreateDir()`, `RENAME`
@@ -224,7 +234,12 @@ slept until its next wake-up, up to a second. It now keeps taking and
 sending until the WRITE is done or the socket is full, does not sleep
 while WRITE data waits, and has a 16 KB buffer. Measured afterwards on the
 reference machine: 1 MB up in 6.8 s and down in 5.2 s, each including
-about 2.8 s of login.
+about 2.8 s of login; 20 MB to the hard disk in about 82 s.
+
+Memory. During a 20 MB upload to disk, chip RAM stayed at the same free
+amount and fast RAM in use rose by 670056 bytes: the transfer session's own
+copy of the server, its console handler and `sftp-server`. The file data
+goes to the disk; RAM use does not grow with the file size.
 
 ## Randomness
 
