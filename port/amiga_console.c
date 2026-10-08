@@ -49,6 +49,7 @@
 #include <sys/filio.h>
 #include <netinet/in.h>
 #include <errno.h>
+#include <string.h>
 
 #include <exec/types.h>
 #include <exec/memory.h>
@@ -60,6 +61,7 @@
 #include <dos/dos.h>
 #include <dos/dosextens.h>
 #include <dos/dostags.h>
+#include <dos/var.h>
 #include <dos/dosasl.h>
 #include <utility/tagitem.h>
 #include <proto/exec.h>
@@ -1068,12 +1070,39 @@ static const char *shell_command(void)
 	return "NewShell * FROM \"" AMIGA_SSHD_SHELL_STARTUP "\"";
 }
 
+/* Sets the session's environment ("NAME=VALUE" strings from the server:
+ * TERM, USER, HOME, SSH_CONNECTION, ...) as local variables of this
+ * process, so the shell or command started from here has them. */
+static void set_environment(void)
+{
+	const char *e;
+
+	if (blk->env == NULL)
+		return;
+	for (e = (const char *)blk->env; *e != '\0'; e += strlen(e) + 1) {
+		const char *eq = strchr(e, '=');
+		char name[64];
+		ULONG n;
+
+		if (eq == NULL)
+			continue;
+		n = (ULONG)(eq - e);
+		if (n == 0 || n >= sizeof(name))
+			continue;
+		memcpy(name, e, n);
+		name[n] = '\0';
+		SetVar((CONST_STRPTR)name, (CONST_STRPTR)(eq + 1), -1,
+			LV_VAR | GVF_LOCAL_ONLY);
+	}
+}
+
 static LONG helper_entry(void)
 {
 	struct TagItem tags[7];
 	BPTR lock = 0, olddir = 0;
 	LONG rc;
 
+	set_environment();
 	if (blk->home != NULL) {
 		lock = Lock(blk->home, SHARED_LOCK);
 		if (lock != 0)

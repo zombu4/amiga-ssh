@@ -145,7 +145,14 @@ bytes straight through once the shell switches the console to raw mode; it
 turns Ctrl-C/D/E/F into break signals for the shell and LF into CR LF on
 output, as the Amiga console does. Without a terminal it passes bytes
 through unchanged. The upstream pty path (`pty_allocate`, `tcsetattr`,
-`TIOCSWINSZ`, utmp) is replaced, not emulated. Full-screen programs learn the
+`TIOCSWINSZ`, utmp) is replaced, not emulated. The helper sets the session's environment as local variables of its own
+process before `SystemTags()`: `USER`, `LOGNAME`, `HOME`, `SSH_CONNECTION`,
+`SSH_CLIENT` and, with a terminal, `TERM`, the variables upstream's
+`execchild()` sets that mean something on AmigaOS. The shell or command
+started from there has them (measured: `Get SSH_CONNECTION` printed
+`10.0.10.25 57973 10.0.10.222 22`).
+
+Full-screen programs learn the
 size of the client's window as they would from the Amiga console
 (console.doc, private Amiga sequences): the handler answers the window
 status request `<CSI>0 q` with the window bounds report
@@ -228,9 +235,13 @@ seek only when the offset differs from the current position. `OPENDIR` and
 `READDIR` use `Examine()`/`ExNext()` and send up to 64 names per reply.
 `REMOVE` and `RMDIR` use `DeleteFile()`, `MKDIR` `CreateDir()`, `RENAME`
 `Rename()` (which, like SFTP version 3, refuses an existing target).
-`READLINK` and `SYMLINK` answer `OP_UNSUPPORTED`; soft links
-(`ST_SOFTLINK`, which has a positive entry type like a directory) are
-listed as symbolic links, not as directories. DOS errors map to
+Soft links (`ST_SOFTLINK`, which has a positive entry type like a
+directory) are listed as symbolic links, not as directories. `READLINK`
+uses `ReadLink()` and returns a full target as an SFTP path, a relative one
+with `../` for each leading `/`. `SYMLINK` uses `MakeLink(LINK_SOFT)` and
+takes its arguments in OpenSSH's order, target first (OpenSSH `PROTOCOL`:
+the order was reversed by accident and kept), resolving a relative target
+against the link's directory and storing it as a full AmigaOS path. DOS errors map to
 `NO_SUCH_FILE` (object or directory not found), `PERMISSION_DENIED`
 (protected or write-protected) or `FAILURE` with the DOS error text.
 Requesters are off (`pr_WindowPtr = -1`), so a missing volume is an error,

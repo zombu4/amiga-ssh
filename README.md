@@ -147,18 +147,34 @@ stops at the next reboot.
 
 ## Limitations
 
-- SFTP: symbolic links can be listed but not created or read
-  (`readlink`/`symlink` are not supported), and files must stay under
-  2 GB (AmigaOS 3.x file positions are 32-bit).
+- Files must stay under 2 GB: AmigaOS 3.x file positions are 32-bit, and
+  the 3.2 NDK defines no 64-bit file calls.
 - For an interactive shell the exit status the client receives is that of
   `NewShell`, not of the last command typed. `ssh amiga@<address> <command>`
   returns the command's real return code.
-- No environment variables (such as `TERM`) are passed to the shell.
-- Port forwarding is built in but has not been tested.
-- A connection that a client keeps open (for example through OpenSSH's
-  `ControlMaster`/`ControlPersist` connection sharing) keeps its session
-  process alive after `exit` until the client closes it; that is how SSH
-  works, not a fault of the server.
+
+## Environment variables
+
+Every session's shell or command has these as local variables: `USER`,
+`LOGNAME`, `HOME`, `SSH_CONNECTION`, `SSH_CLIENT`, and `TERM` when the
+client asked for a terminal. In AmigaDOS a name with an underscore is
+written in braces: `Echo ${SSH_CLIENT}`, or read with `Get SSH_CLIENT`.
+
+## Port forwarding
+
+Both directions are supported, for example:
+
+```
+ssh -L 8080:somehost:80 amiga@<address>   # local port 8080 reaches somehost:80 through the Amiga
+ssh -R 8081:localhost:80 amiga@<address>  # the Amiga's port 8081 reaches your port 80
+```
+
+## Connection sharing
+
+OpenSSH's `ControlMaster`/`ControlPersist` keeps one connection open
+after you type `exit`, so the Amiga keeps that session's process until the
+client closes the connection (`ssh -O exit amiga@<address>`). That is how
+connection sharing works, not a fault of the server.
 
 ## Security notes
 

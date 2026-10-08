@@ -40,6 +40,9 @@ struct amiga_child {
 	LONG pty;			/* nonzero: client asked for a terminal */
 	STRPTR command;			/* command line, NULL for a shell */
 	STRPTR home;			/* current directory, NULL: unchanged */
+	STRPTR env;			/* "NAME=VALUE" strings, each ended by a
+					 * NUL, the list by an empty one; NULL:
+					 * none */
 
 	/* Server-private: list of children not yet freed. */
 	struct amiga_child *next;

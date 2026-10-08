@@ -1515,6 +1515,126 @@ static int do_rename(ULONG id, struct req *r)
 	return send_status(id, SSH_FX_OK);
 }
 
+/* Splits an AmigaOS path into its directory ("Vol:" or "Vol:a") and its
+ * last component; dir gets a NUL-terminated copy. Returns the component, or
+ * NULL for a volume root, which has none. */
+static const char *split_last(const char *apath, char *dir, ULONG size)
+{
+	const char *slash = strrchr(apath, '/');
+	const char *colon = strchr(apath, ':');
+	const char *cut = slash != NULL ? slash : colon;
+	ULONG n;
+
+	if (cut == NULL || cut[1] == '\0')
+		return NULL;
+	n = (ULONG)(cut - apath) + (cut == colon ? 1 : 0);
+	if (n >= size)
+		return NULL;
+	memcpy(dir, apath, n);
+	dir[n] = '\0';
+	return cut + 1;
+}
+
+/* READLINK: the target of a soft link, as an SFTP path. AmigaOS keeps
+ * either a full path ("Vol:dir/file", returned as "/Vol/dir/file") or one
+ * relative to the link's directory, where each leading '/' is a step up
+ * (returned with "../" for each). */
+static int do_readlink(ULONG id, struct req *r)
+{
+	char sftp[PATH_MAX_LEN], apath[PATH_MAX_LEN], dir[PATH_MAX_LEN];
+	char target[PATH_MAX_LEN], out[PATH_MAX_LEN];
+	const char *name, *t;
+	const UBYTE *s;
+	ULONG n, o = 0;
+	int root;
+	BPTR lock;
+	LONG ok;
+
+	if (!get_string(r, &s, &n))
+		return send_status(id, SSH_FX_BAD_MESSAGE);
+	if (!request_path(s, n, sftp, apath, &root) || root)
+		return send_status(id, SSH_FX_NO_SUCH_FILE);
+	name = split_last(apath, dir, sizeof(dir));
+	if (name == NULL)
+		return send_dos_error(id, ERROR_OBJECT_WRONG_TYPE);
+	lock = Lock((CONST_STRPTR)dir, SHARED_LOCK);
+	if (lock == 0)
+		return send_dos_error(id, IoErr());
+	ok = ReadLink(((struct FileLock *)BADDR(lock))->fl_Task, lock,
+		(CONST_STRPTR)name, (STRPTR)target, sizeof(target));
+	if (!ok) {
+		LONG err = IoErr();
+
+		UnLock(lock);
+		return send_dos_error(id, err);
+	}
+	UnLock(lock);
+
+	if (strchr(target, ':') != NULL) {
+		amiga_to_sftp(target, out, sizeof(out));
+	} else {
+		for (t = target; *t == '/' && o + 3 < sizeof(out); t++) {
+			memcpy(out + o, "../", 3);
+			o += 3;
+		}
+		n = strlen(t);
+		if (o + n + 1 > sizeof(out))	/* would not fit: never cut it */
+			return send_status(id, SSH_FX_FAILURE);
+		memcpy(out + o, t, n + 1);
+	}
+	ob_reset(&reply);
+	ob_u8(&reply, SSH_FXP_NAME);
+	ob_u32(&reply, id);
+	ob_u32(&reply, 1);
+	ob_cstring(&reply, out);
+	ob_cstring(&reply, out);
+	ob_u32(&reply, 0);		/* no attributes */
+	return ob_send(&reply);
+}
+
+/* SYMLINK: makes a soft link. OpenSSH sends the target first and the link
+ * second, the reverse of draft-ietf-secsh-filexfer-02 (OpenSSH PROTOCOL,
+ * "sftp: Reversal of arguments to SSH_FXP_SYMLINK"); its clients are the
+ * ones in use, so that order is followed. A relative target is taken
+ * relative to the link's directory, as on Unix, and stored as a full
+ * AmigaOS path. */
+static int do_symlink(ULONG id, struct req *r)
+{
+	char lsftp[PATH_MAX_LEN], lapath[PATH_MAX_LEN];
+	char tsftp[PATH_MAX_LEN], tapath[PATH_MAX_LEN];
+	char joined[PATH_MAX_LEN * 2];
+	const UBYTE *ts, *ls;
+	ULONG tn, ln;
+	int root, troot;
+
+	if (!get_string(r, &ts, &tn) || !get_string(r, &ls, &ln))
+		return send_status(id, SSH_FX_BAD_MESSAGE);
+	if (!request_path(ls, ln, lsftp, lapath, &root) || root)
+		return send_status(id, SSH_FX_PERMISSION_DENIED);
+	if (tn > 0 && ts[0] == '/') {
+		if (!request_path(ts, tn, tsftp, tapath, &troot))
+			return send_status(id, SSH_FX_NO_SUCH_FILE);
+	} else {
+		/* relative to the directory that holds the link */
+		const char *slash = strrchr(lsftp, '/');
+		ULONG dn = (ULONG)(slash - lsftp);
+
+		if (dn + 1 + tn + 1 > sizeof(joined))
+			return send_status(id, SSH_FX_FAILURE);
+		memcpy(joined, lsftp, dn);
+		joined[dn] = '/';
+		memcpy(joined + dn + 1, ts, tn);
+		if (!request_path((const UBYTE *)joined, dn + 1 + tn, tsftp, tapath,
+				&troot))
+			return send_status(id, SSH_FX_NO_SUCH_FILE);
+	}
+	if (troot)
+		return send_status(id, SSH_FX_FAILURE);	/* "/" has no AmigaOS path */
+	if (!MakeLink((CONST_STRPTR)lapath, (LONG)tapath, LINK_SOFT))
+		return send_dos_error(id, IoErr());
+	return send_status(id, SSH_FX_OK);
+}
+
 /* ---- main loop ---------------------------------------------------------- */
 
 /* Handles one request. Returns 0 when the server must end. */
@@ -1547,8 +1667,10 @@ static int dispatch(UBYTE type, struct req *r)
 	case SSH_FXP_MKDIR:    return do_mkdir(id, r);
 	case SSH_FXP_REALPATH: return do_realpath(id, r);
 	case SSH_FXP_RENAME:   return do_rename(id, r);
+	case SSH_FXP_READLINK: return do_readlink(id, r);
+	case SSH_FXP_SYMLINK:  return do_symlink(id, r);
 	default:
-		/* READLINK, SYMLINK, EXTENDED and unknown types */
+		/* EXTENDED and unknown types */
 		return send_status(id, SSH_FX_OP_UNSUPPORTED);
 	}
 }

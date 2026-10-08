@@ -152,7 +152,8 @@ static void free_all_children(void)
 /* ---- the interface ------------------------------------------------------ */
 
 int amiga_child_start(const char *command, int pty, int cols, int rows,
-		const char *home, int *fd, struct amiga_child **child)
+		const char *home, const char *const *env, int *fd,
+		struct amiga_child **child)
 {
 	struct amiga_child *blk;
 	struct TagItem tags[9];
@@ -183,13 +184,20 @@ int amiga_child_start(const char *command, int pty, int cols, int rows,
 		exit_hook_set = 1;
 	}
 
-	/* The block, with the two strings stored right behind it, so one
+	/* The block, with its strings stored right behind it, so one
 	 * FreeVec() releases everything. */
 	size = sizeof(*blk);
 	if (command != NULL)
 		size += strlen(command) + 1;
 	if (home != NULL)
 		size += strlen(home) + 1;
+	if (env != NULL) {
+		const char *const *e;
+
+		for (e = env; *e != NULL; e++)
+			size += strlen(*e) + 1;
+		size += 1;		/* the empty string that ends the list */
+	}
 	blk = AllocVec(size, MEMF_PUBLIC | MEMF_CLEAR);
 	if (blk == NULL) {
 		errno = ENOMEM;
@@ -210,7 +218,22 @@ int amiga_child_start(const char *command, int pty, int cols, int rows,
 	if (command != NULL)
 		p = copy_string(p, command, &blk->command);
 	if (home != NULL)
-		copy_string(p, home, &blk->home);
+		p = copy_string(p, home, &blk->home);
+	if (env != NULL) {
+		const char *const *e;
+		STRPTR first = NULL;
+
+		/* "NAME=VALUE\0NAME=VALUE\0\0"; MEMF_CLEAR already made the
+		 * final byte 0. */
+		for (e = env; *e != NULL; e++) {
+			STRPTR where;
+
+			p = copy_string(p, *e, &where);
+			if (first == NULL)
+				first = where;
+		}
+		blk->env = first != NULL ? first : (STRPTR)p;
+	}
 
 	/* The channel. sv[0] stays here, non-blocking; sv[1] goes to the
 	 * handler. */

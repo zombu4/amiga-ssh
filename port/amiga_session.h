@@ -21,6 +21,9 @@ struct amiga_child;
 
 /* Starts a console handler and, through it, either an interactive shell
  * (command == NULL: "NewShell *") or one AmigaDOS command line.
+ *  env   - NULL, or a NULL-terminated list of "NAME=VALUE" strings that
+ *          the shell or command gets as local variables (TERM, USER,
+ *          HOME, SSH_CONNECTION, ...).
  *  pty   - nonzero if the client requested a terminal (pty-req): the
  *          handler then echoes and edits lines itself, turns Ctrl-C/D/E/F
  *          into break signals and converts LF to CR LF on output; zero
@@ -31,7 +34,8 @@ struct amiga_child;
  * already non-blocking), the child in *child, and returns 0. On failure
  * returns -1 with errno set and nothing left running. */
 int amiga_child_start(const char *command, int pty, int cols, int rows,
-		const char *home, int *fd, struct amiga_child **child);
+		const char *home, const char *const *env, int *fd,
+		struct amiga_child **child);
 
 /* The Amiga signal mask the server must add to its WaitSelect() wait; set
  * when any child has finished. 0 before the first amiga_child_start(). */

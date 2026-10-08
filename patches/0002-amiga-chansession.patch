@@ -19,6 +19,10 @@ AmigaOS has no fork(), exec(), pty, termios, SIGCHLD or waitpid().
 sessionwinchange() loses its const qualifier because it now stores the
 size. Everything else is under #ifdef __amigaos__.
 
+The shell or command gets USER, LOGNAME, HOME, TERM (with a terminal),
+SSH_CONNECTION and SSH_CLIENT as local variables, as upstream's
+execchild() sets them in the environment.
+
 diff --git a/src/chansession.h b/src/chansession.h
 index 306af945..c9657b9d 100644
 --- a/src/chansession.h
@@ -40,7 +44,7 @@ index 306af945..c9657b9d 100644
  
  struct ChildPid {
 diff --git a/src/svr-chansession.c b/src/svr-chansession.c
-index a2ea1fcf..64efe206 100644
+index a2ea1fcf..8f5f8400 100644
 --- a/src/svr-chansession.c
 +++ b/src/svr-chansession.c
 @@ -37,6 +37,11 @@
@@ -325,11 +329,20 @@ index a2ea1fcf..64efe206 100644
  
  	TRACE(("leave sessionpty"))
  	return DROPBEAR_SUCCESS;
-@@ -765,10 +893,56 @@ static int sessioncommand(struct Channel *channel, struct ChanSess *chansess,
+@@ -765,10 +893,87 @@ static int sessioncommand(struct Channel *channel, struct ChanSess *chansess,
  	return ret;
  }
  
 +#ifdef __amigaos__
++/* "NAME=VALUE" for the session's environment, in m_malloc()ed memory. */
++static char *amiga_env(const char *name, const char *value) {
++	size_t len = strlen(name) + 1 + strlen(value) + 1;
++	char *s = m_malloc(len);
++
++	snprintf(s, len, "%s=%s", name, value);
++	return s;
++}
++
 +/* Starts the shell (chansess->cmd == NULL) or command for a channel through
 + * the port's console handler (port/amiga_session.h), in the account's home
 + * directory. The channel gets one connected socket for both directions, like
@@ -345,10 +358,32 @@ index a2ea1fcf..64efe206 100644
 +		int pty) {
 +	static pid_t lastpid = 0;
 +	struct amiga_child *child = NULL;
-+	int fd = -1;
++	int fd = -1, n = 0, i, ret;
++	/* The variables upstream's execchild() sets that mean something here,
++	 * given to the shell or command as local variables. */
++	char *env[8];
 +
-+	if (amiga_child_start(chansess->cmd, pty, chansess->amiga_cols,
-+				chansess->amiga_rows, ses.authstate.pw_dir, &fd, &child) < 0) {
++	env[n++] = amiga_env("USER", ses.authstate.pw_name);
++	env[n++] = amiga_env("LOGNAME", ses.authstate.pw_name);
++	env[n++] = amiga_env("HOME", ses.authstate.pw_dir);
++	if (chansess->term != NULL) {
++		env[n++] = amiga_env("TERM", chansess->term);
++	}
++	if (chansess->connection_string != NULL) {
++		env[n++] = amiga_env("SSH_CONNECTION", chansess->connection_string);
++	}
++	if (chansess->client_string != NULL) {
++		env[n++] = amiga_env("SSH_CLIENT", chansess->client_string);
++	}
++	env[n] = NULL;
++
++	ret = amiga_child_start(chansess->cmd, pty, chansess->amiga_cols,
++			chansess->amiga_rows, ses.authstate.pw_dir,
++			(const char *const *)env, &fd, &child);
++	for (i = 0; i < n; i++) {
++		m_free(env[i]);
++	}
++	if (ret < 0) {
 +		dropbear_log(LOG_WARNING, "Couldn't start %s: %s",
 +				chansess->cmd ? "command" : "shell", strerror(errno));
 +		return DROPBEAR_FAILURE;
@@ -382,7 +417,7 @@ index a2ea1fcf..64efe206 100644
  	int ret;
  
  	TRACE(("enter noptycommand"))
-@@ -805,6 +979,7 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
+@@ -805,6 +1010,7 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
  
  	TRACE(("leave noptycommand"))
  	return DROPBEAR_SUCCESS;
@@ -390,7 +425,7 @@ index a2ea1fcf..64efe206 100644
  }
  
  /* Execute a command or shell within a pty environment, and set up
-@@ -812,6 +987,16 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
+@@ -812,6 +1018,16 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
   * Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
  static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
  
@@ -407,7 +442,7 @@ index a2ea1fcf..64efe206 100644
  	pid_t pid;
  	struct logininfo *li = NULL;
  #if DO_MOTD
-@@ -935,6 +1120,7 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
+@@ -935,6 +1151,7 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
  
  	TRACE(("leave ptycommand"))
  	return DROPBEAR_SUCCESS;
@@ -415,7 +450,7 @@ index a2ea1fcf..64efe206 100644
  }
  
  /* Add the pid of a child to the list for exit-handling */
-@@ -960,6 +1146,7 @@ static void addchildpid(struct ChanSess *chansess, pid_t pid) {
+@@ -960,6 +1177,7 @@ static void addchildpid(struct ChanSess *chansess, pid_t pid) {
  
  }
  
@@ -423,7 +458,7 @@ index a2ea1fcf..64efe206 100644
  /* Clean up, drop to user privileges, set up the environment and execute
   * the command/shell. This function does not return. */
  static void execchild(const void *user_data) {
-@@ -1067,12 +1254,15 @@ static void execchild(const void *user_data) {
+@@ -1067,12 +1285,15 @@ static void execchild(const void *user_data) {
  	/* only reached on error */
  	dropbear_exit("Child failed");
  }
@@ -439,7 +474,7 @@ index a2ea1fcf..64efe206 100644
  
  	/* single child process intially */
  	svr_ses.childpids = (struct ChildPid*)m_malloc(sizeof(struct ChildPid));
-@@ -1080,12 +1270,15 @@ void svr_chansessinitialise() {
+@@ -1080,12 +1301,15 @@ void svr_chansessinitialise() {
  	svr_ses.childpids[0].chansess = NULL;
  	svr_ses.childpidsize = 1;
  	svr_ses.lastexit.exitpid = -1; /* Nothing has exited yet */
