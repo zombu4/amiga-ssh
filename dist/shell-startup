@@ -1,0 +1,18 @@
+; shell-startup - start-up script of the shells started for SSH sessions.
+;
+; Copyright (c) 2026 zombu2
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+;
+; Install-SSH copies this file to DEVS:Internet/sshd/shell-startup (only if
+; it is not there yet, so your own changes to it are kept). The console
+; handler starts each SSH shell with NewShell's FROM pointing here instead
+; of at S:Shell-Startup, so this file runs the normal start-up first and
+; then adds what users of other systems type to leave a shell.
+
+If EXISTS "S:Shell-Startup"
+  Execute "S:Shell-Startup"
+EndIf
+
+; AmigaDOS ends a shell with EndShell; exit and logout do the same here.
+Alias exit EndShell
+Alias logout EndShell

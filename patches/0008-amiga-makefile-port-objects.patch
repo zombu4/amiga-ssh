@@ -1,0 +1,25 @@
+Subject: Makefile: let a port add objects to dropbear and dropbearkey
+
+PORT_SVROBJS and PORT_KEYOBJS are added to the object lists of dropbear
+and dropbearkey. Both are empty unless given on the make command line, so
+other builds are unchanged. build.sh passes the AmigaOS port's objects
+this way.
+
+diff --git a/Makefile.in b/Makefile.in
+index 8f178ee2..8f80635f 100644
+--- a/Makefile.in
++++ b/Makefile.in
+@@ -90,9 +90,11 @@ ifeq (@DROPBEAR_FUZZ@, 1)
+ 	CXX=@CXX@
+ 	FUZZ_CLEAN=fuzz-clean
+ else
+-	dropbearobjs=$(COMMONOBJS) $(CLISVROBJS) $(SVROBJS)
++	# PORT_SVROBJS and PORT_KEYOBJS: extra objects a port passes on the
++	# make command line (empty by default)
++	dropbearobjs=$(COMMONOBJS) $(CLISVROBJS) $(SVROBJS) $(PORT_SVROBJS)
+ 	dbclientobjs=$(COMMONOBJS) $(CLISVROBJS) $(CLIOBJS)
+-	dropbearkeyobjs=$(COMMONOBJS) $(KEYOBJS)
++	dropbearkeyobjs=$(COMMONOBJS) $(KEYOBJS) $(PORT_KEYOBJS)
+ 	dropbearconvertobjs=$(COMMONOBJS) $(CONVERTOBJS)
+ 	scpobjs=$(SCPOBJS)
+ endif

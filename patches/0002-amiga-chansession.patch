@@ -1,0 +1,457 @@
+Subject: AmigaOS: start shells and commands through the port's console handler
+
+AmigaOS has no fork(), exec(), pty, termios, SIGCHLD or waitpid().
+- struct ChanSess gets the child (struct amiga_child), a flag for an
+  accepted pty-req and the terminal size.
+- pty-req keeps the terminal type and size, checks and skips the modes
+  string; no pty is allocated.
+- shell/exec start the child with amiga_child_start() in the account's
+  home directory (ses.authstate.pw_dir). The channel gets one socket as
+  readfd and writefd, with bidir_fd = 1 so that close_chan_fd() shuts down
+  one direction at a time: the client's EOF must not cut off output still
+  coming. errfd stays FD_CLOSED. chansess->pid takes a nonzero number per
+  child so sesscheckclose() and the childpids table work unchanged.
+- svr_chansess_checksignal() polls amiga_child_finished() and fills
+  chansess->exit (exitpid, exitstatus = return code, exitsignal = -1).
+- "signal" sends Ctrl-C for INT, TERM, HUP, QUIT and KILL;
+  "window-change" calls amiga_child_winsize(); cleanup calls
+  amiga_child_free(); no SIGCHLD handler is installed.
+sessionwinchange() loses its const qualifier because it now stores the
+size. Everything else is under #ifdef __amigaos__.
+
+diff --git a/src/chansession.h b/src/chansession.h
+index 306af945..c9657b9d 100644
+--- a/src/chansession.h
++++ b/src/chansession.h
+@@ -74,6 +74,15 @@ struct ChanSess {
+ 	char * agentfile;
+ 	char * agentdir;
+ #endif
++
++#ifdef __amigaos__
++	/* The shell or command (port/amiga_session.h), NULL until started */
++	struct amiga_child *amiga_child;
++	/* Set when a pty-req was accepted; AmigaOS has no pty master */
++	int amiga_pty;
++	/* Terminal size from pty-req and window-change, 0 if unknown */
++	int amiga_cols, amiga_rows;
++#endif
+ };
+ 
+ struct ChildPid {
+diff --git a/src/svr-chansession.c b/src/svr-chansession.c
+index a2ea1fcf..64efe206 100644
+--- a/src/svr-chansession.c
++++ b/src/svr-chansession.c
+@@ -37,6 +37,11 @@
+ #include "agentfwd.h"
+ #include "runopts.h"
+ #include "auth.h"
++#ifdef __amigaos__
++/* Shells and commands are started through the port (port/amiga_session.c) */
++#include <dos/dos.h>
++#include "amiga_session.h"
++#endif
+ 
+ /* Handles sessions (either shells or programs) requested by the client */
+ 
+@@ -46,10 +51,14 @@ static int sessionpty(struct ChanSess * chansess);
+ static int sessionsignal(const struct ChanSess *chansess);
+ static int noptycommand(struct Channel *channel, struct ChanSess *chansess);
+ static int ptycommand(struct Channel *channel, struct ChanSess *chansess);
+-static int sessionwinchange(const struct ChanSess *chansess);
++static int sessionwinchange(struct ChanSess *chansess);
++#ifndef __amigaos__
+ static void execchild(const void *user_data_chansess);
++#endif
+ static void addchildpid(struct ChanSess *chansess, pid_t pid);
++#ifndef __amigaos__
+ static void sesssigchild_handler(int val);
++#endif
+ static void closechansess(const struct Channel *channel);
+ static void cleanupchansess(const struct Channel *channel);
+ static int newchansess(struct Channel *channel);
+@@ -93,6 +102,35 @@ static int sesscheckclose(struct Channel *channel) {
+  * the parent when it runs. This work correctly at least in the case of a
+  * single shell spawned (ie the usual case) */
+ void svr_chansess_checksignal(void) {
++#ifdef __amigaos__
++	/* No SIGCHLD or waitpid() on AmigaOS. Every running child is polled
++	 * (amiga_child_finished() never blocks) on each pass, so a finish is
++	 * seen even if its signal was taken by an earlier wait. A child that has
++	 * finished gets its exit status filled in once, the way the code below
++	 * does for an exited pid; it ended normally, so exitsignal is -1. */
++	unsigned int i;
++
++	for (i = 0; i < svr_ses.childpidsize; i++) {
++		struct ChanSess *chansess = svr_ses.childpids[i].chansess;
++		long rc;
++
++		if (svr_ses.childpids[i].pid <= 0 || chansess == NULL
++				|| chansess->amiga_child == NULL
++				|| chansess->exit.exitpid != -1) {
++			continue;
++		}
++		if (amiga_child_finished(chansess->amiga_child, &rc)) {
++			TRACE(("svr_chansess_checksignal : child %d rc %ld",
++						chansess->pid, rc))
++			chansess->exit.exitpid = chansess->pid;
++			chansess->exit.exitstatus = (int)rc;
++			chansess->exit.exitsignal = -1;
++			chansess->exit.exitcore = 0;
++			/* makes channelio() run check_close() on the channels */
++			ses.channel_signal_pending = 1;
++		}
++	}
++#else
+ 	int status;
+ 	pid_t pid;
+ 
+@@ -138,8 +176,10 @@ void svr_chansess_checksignal(void) {
+ 			ex->exitsignal = -1;
+ 		}
+ 	}
++#endif /* __amigaos__ */
+ }
+ 
++#ifndef __amigaos__
+ static void sesssigchild_handler(int UNUSED(dummy)) {
+ 	struct sigaction sa_chld;
+ 
+@@ -162,6 +202,7 @@ static void sesssigchild_handler(int UNUSED(dummy)) {
+ 
+ 	errno = saved_errno;
+ }
++#endif /* !__amigaos__ */
+ 
+ /* send the exit status or the signal causing termination for a session */
+ static void send_exitsignalstatus(const struct Channel *channel) {
+@@ -257,6 +298,13 @@ static int newchansess(struct Channel *channel) {
+ 
+ 	chansess->exit.exitpid = -1;
+ 
++#ifdef __amigaos__
++	chansess->amiga_child = NULL;
++	chansess->amiga_pty = 0;
++	chansess->amiga_cols = 0;
++	chansess->amiga_rows = 0;
++#endif
++
+ 	channel->typedata = chansess;
+ 
+ #if DROPBEAR_X11FWD
+@@ -278,6 +326,7 @@ static int newchansess(struct Channel *channel) {
+ 
+ }
+ 
++#ifndef __amigaos__
+ static struct logininfo* 
+ chansess_login_alloc(const struct ChanSess *chansess) {
+ 	struct logininfo * li;
+@@ -285,6 +334,7 @@ chansess_login_alloc(const struct ChanSess *chansess) {
+ 			svr_ses.remotehost, chansess->tty);
+ 	return li;
+ }
++#endif
+ 
+ /* send exit status message before the channel is closed */
+ static void closechansess(const struct Channel *channel) {
+@@ -308,7 +358,9 @@ static void cleanupchansess(const struct Channel *channel) {
+ 
+ 	struct ChanSess *chansess;
+ 	unsigned int i;
++#ifndef __amigaos__
+ 	struct logininfo *li;
++#endif
+ 
+ 	TRACE(("enter closechansess"))
+ 
+@@ -323,6 +375,15 @@ static void cleanupchansess(const struct Channel *channel) {
+ 	m_free(chansess->term);
+ 	m_free(chansess->original_command);
+ 
++#ifdef __amigaos__
++	/* No pty and no login records on AmigaOS. amiga_child_free() never
++	 * blocks: a child that is still running is told to stop (Ctrl-C) and
++	 * freed once it has ended. */
++	if (chansess->amiga_child != NULL) {
++		amiga_child_free(chansess->amiga_child);
++		chansess->amiga_child = NULL;
++	}
++#else
+ 	if (chansess->tty) {
+ 		/* write the utmp/wtmp login record */
+ 		li = chansess_login_alloc(chansess);
+@@ -336,6 +397,7 @@ static void cleanupchansess(const struct Channel *channel) {
+ 		pty_release(chansess->tty);
+ 		m_free(chansess->tty);
+ 	}
++#endif /* __amigaos__ */
+ 
+ #if DROPBEAR_X11FWD
+ 	x11cleanup(chansess);
+@@ -465,37 +527,84 @@ static int sessionsignal(const struct ChanSess *chansess) {
+ 		return DROPBEAR_FAILURE;
+ 	}
+ 			
++#ifdef __amigaos__
++	/* AmigaOS stops a shell or command with its break signal, Ctrl-C;
++	 * the signals that ask a process to end map to it. A child that has
++	 * already finished cannot take a signal, as kill() fails upstream. */
++	if (chansess->amiga_child == NULL || chansess->exit.exitpid != -1) {
++		return DROPBEAR_FAILURE;
++	}
++	if (sig == SIGINT || sig == SIGTERM || sig == SIGHUP
++			|| sig == SIGQUIT || sig == SIGKILL) {
++		amiga_child_break(chansess->amiga_child, SIGBREAKF_CTRL_C);
++	} else {
++		TRACE(("sessionsignal: no AmigaOS equivalent for signal %d", sig))
++		return DROPBEAR_FAILURE;
++	}
++#else
+ 	if (kill(chansess->pid, sig) < 0) {
+ 		TRACE(("sessionsignal: kill() errored"))
+ 		return DROPBEAR_FAILURE;
+ 	} 
++#endif
+ 
+ 	return DROPBEAR_SUCCESS;
+ }
+ 
+ /* Let the process know that the window size has changed, as notified from the
+  * client. Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
+-static int sessionwinchange(const struct ChanSess *chansess) {
++static int sessionwinchange(struct ChanSess *chansess) {
+ 
+ 	int termc, termr, termw, termh;
+ 
++#ifdef __amigaos__
++	if (!chansess->amiga_pty) {
++		/* haven't got a pty yet */
++		return DROPBEAR_FAILURE;
++	}
++#else
+ 	if (chansess->master < 0) {
+ 		/* haven't got a pty yet */
+ 		return DROPBEAR_FAILURE;
+ 	}
++#endif
+ 			
+ 	termc = buf_getint(ses.payload);
+ 	termr = buf_getint(ses.payload);
+ 	termw = buf_getint(ses.payload);
+ 	termh = buf_getint(ses.payload);
+ 	
++#ifdef __amigaos__
++	/* Kept for a child started later, and passed to a running one. The
++	 * pixel size (termw, termh) has no use on AmigaOS. */
++	(void)termw;
++	(void)termh;
++	chansess->amiga_cols = termc;
++	chansess->amiga_rows = termr;
++	if (chansess->amiga_child != NULL) {
++		amiga_child_winsize(chansess->amiga_child, termc, termr);
++	}
++#else
+ 	pty_change_window_size(chansess->master, termr, termc, termw, termh);
++#endif
+ 
+ 	return DROPBEAR_SUCCESS;
+ }
+ 
+ static void get_termmodes(const struct ChanSess *chansess) {
+ 
++#ifdef __amigaos__
++	/* AmigaOS has no termios: the console handler edits lines itself.
++	 * The modes string is checked as below and skipped. */
++	unsigned int len;
++
++	(void)chansess;
++	len = buf_getint(ses.payload);
++	if (len != ses.payload->len - ses.payload->pos) {
++		dropbear_exit("Bad term mode string");
++	}
++	buf_incrpos(ses.payload, len);
++#else
+ 	struct termios termio;
+ 	unsigned char opcode;
+ 	unsigned int value;
+@@ -583,6 +692,7 @@ static void get_termmodes(const struct ChanSess *chansess) {
+ 		dropbear_log(LOG_INFO, "Error setting terminal attributes");
+ 	}
+ 	TRACE(("leave get_termmodes"))
++#endif /* __amigaos__ */
+ }
+ 
+ /* Set up a session pty which will be used to execute the shell or program.
+@@ -591,8 +701,10 @@ static void get_termmodes(const struct ChanSess *chansess) {
+ static int sessionpty(struct ChanSess * chansess) {
+ 
+ 	unsigned int termlen;
++#ifndef __amigaos__
+ 	char namebuf[65];
+ 	struct passwd * pw = NULL;
++#endif
+ 
+ 	TRACE(("enter sessionpty"))
+ 
+@@ -608,6 +720,21 @@ static int sessionpty(struct ChanSess * chansess) {
+ 		return DROPBEAR_FAILURE;
+ 	}
+ 
++#ifdef __amigaos__
++	/* No pty to allocate: the console handler provides the terminal
++	 * when the shell or command starts. Keep the size and check the
++	 * modes now, as upstream does. */
++	if (chansess->amiga_pty) {
++		dropbear_exit("Multiple pty requests");
++	}
++	chansess->amiga_pty = 1;
++
++	/* Set up the rows/col counts */
++	sessionwinchange(chansess);
++
++	/* Read the terminal modes */
++	get_termmodes(chansess);
++#else
+ 	/* allocate the pty */
+ 	if (chansess->master != -1) {
+ 		dropbear_exit("Multiple pty requests");
+@@ -632,6 +759,7 @@ static int sessionpty(struct ChanSess * chansess) {
+ 
+ 	/* Read the terminal modes */
+ 	get_termmodes(chansess);
++#endif /* __amigaos__ */
+ 
+ 	TRACE(("leave sessionpty"))
+ 	return DROPBEAR_SUCCESS;
+@@ -765,10 +893,56 @@ static int sessioncommand(struct Channel *channel, struct ChanSess *chansess,
+ 	return ret;
+ }
+ 
++#ifdef __amigaos__
++/* Starts the shell (chansess->cmd == NULL) or command for a channel through
++ * the port's console handler (port/amiga_session.h), in the account's home
++ * directory. The channel gets one connected socket for both directions, like
++ * upstream's pty master. bidir_fd is set so that close_chan_fd() shuts down
++ * one direction at a time and closes the socket only when both are done:
++ * the client's EOF must not cut off output that is still coming. errfd
++ * stays FD_CLOSED as set by newchannel(), since the handler sends the
++ * command's error output on the same socket.
++ * chansess->pid takes a number that is unique in this session and nonzero
++ * while the child runs, which sesscheckclose() and the childpids table rely
++ * on. Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
++static int amiga_startchild(struct Channel *channel, struct ChanSess *chansess,
++		int pty) {
++	static pid_t lastpid = 0;
++	struct amiga_child *child = NULL;
++	int fd = -1;
++
++	if (amiga_child_start(chansess->cmd, pty, chansess->amiga_cols,
++				chansess->amiga_rows, ses.authstate.pw_dir, &fd, &child) < 0) {
++		dropbear_log(LOG_WARNING, "Couldn't start %s: %s",
++				chansess->cmd ? "command" : "shell", strerror(errno));
++		return DROPBEAR_FAILURE;
++	}
++
++	lastpid++;
++	if (lastpid <= 0) {
++		lastpid = 1;
++	}
++	chansess->amiga_child = child;
++	chansess->pid = lastpid;
++	addchildpid(chansess, chansess->pid);
++
++	channel->readfd = fd;
++	channel->writefd = fd;
++	channel->bidir_fd = 1;
++	ses.maxfd = MAX(ses.maxfd, fd);
++
++	return DROPBEAR_SUCCESS;
++}
++#endif /* __amigaos__ */
++
+ /* Execute a command and set up redirection of stdin/stdout/stderr without a
+  * pty.
+  * Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
+ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
++#ifdef __amigaos__
++	TRACE(("enter noptycommand"))
++	return amiga_startchild(channel, chansess, 0);
++#else
+ 	int ret;
+ 
+ 	TRACE(("enter noptycommand"))
+@@ -805,6 +979,7 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
+ 
+ 	TRACE(("leave noptycommand"))
+ 	return DROPBEAR_SUCCESS;
++#endif /* __amigaos__ */
+ }
+ 
+ /* Execute a command or shell within a pty environment, and set up
+@@ -812,6 +987,16 @@ static int noptycommand(struct Channel *channel, struct ChanSess *chansess) {
+  * Returns DROPBEAR_SUCCESS or DROPBEAR_FAILURE */
+ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
+ 
++#ifdef __amigaos__
++	TRACE(("enter ptycommand"))
++
++	/* we need to have a pty-req accepted */
++	if (!chansess->amiga_pty) {
++		dropbear_log(LOG_WARNING, "No pty was allocated, couldn't execute");
++		return DROPBEAR_FAILURE;
++	}
++	return amiga_startchild(channel, chansess, 1);
++#else
+ 	pid_t pid;
+ 	struct logininfo *li = NULL;
+ #if DO_MOTD
+@@ -935,6 +1120,7 @@ static int ptycommand(struct Channel *channel, struct ChanSess *chansess) {
+ 
+ 	TRACE(("leave ptycommand"))
+ 	return DROPBEAR_SUCCESS;
++#endif /* __amigaos__ */
+ }
+ 
+ /* Add the pid of a child to the list for exit-handling */
+@@ -960,6 +1146,7 @@ static void addchildpid(struct ChanSess *chansess, pid_t pid) {
+ 
+ }
+ 
++#ifndef __amigaos__
+ /* Clean up, drop to user privileges, set up the environment and execute
+  * the command/shell. This function does not return. */
+ static void execchild(const void *user_data) {
+@@ -1067,12 +1254,15 @@ static void execchild(const void *user_data) {
+ 	/* only reached on error */
+ 	dropbear_exit("Child failed");
+ }
++#endif /* !__amigaos__ */
+ 
+ /* Set up the general chansession environment, in particular child-exit
+  * handling */
+ void svr_chansessinitialise() {
+ 
++#ifndef __amigaos__
+ 	struct sigaction sa_chld;
++#endif
+ 
+ 	/* single child process intially */
+ 	svr_ses.childpids = (struct ChildPid*)m_malloc(sizeof(struct ChildPid));
+@@ -1080,12 +1270,15 @@ void svr_chansessinitialise() {
+ 	svr_ses.childpids[0].chansess = NULL;
+ 	svr_ses.childpidsize = 1;
+ 	svr_ses.lastexit.exitpid = -1; /* Nothing has exited yet */
++	/* AmigaOS has no SIGCHLD; see svr_chansess_checksignal() */
++#ifndef __amigaos__
+ 	sa_chld.sa_handler = sesssigchild_handler;
+ 	sa_chld.sa_flags = SA_NOCLDSTOP;
+ 	sigemptyset(&sa_chld.sa_mask);
+ 	if (sigaction(SIGCHLD, &sa_chld, NULL) < 0) {
+ 		dropbear_exit("signal() error");
+ 	}
++#endif
+ 	
+ }
+ 

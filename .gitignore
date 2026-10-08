@@ -1,0 +1,13 @@
+# Upstream Dropbear checkout and build tree, created by build.sh
+/build/
+
+# Object files and intermediate build output
+*.o
+*.a
+*.lo
+*.d
+
+# Editor and OS clutter
+.DS_Store
+*.swp
+*~

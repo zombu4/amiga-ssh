@@ -1,0 +1,151 @@
+; Uninstall-SSH - removes the amiga-ssh SSH server.
+;
+; Copyright (c) 2026 zombu2
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+;
+; Usage: in a Shell, type
+;     Execute Uninstall-SSH
+; (from the directory that holds it, or with its full path).
+;
+; It removes:
+;   the block between ";BEGIN amiga-ssh" and ";END amiga-ssh" in
+;   S:User-Startup (every other line of that file is kept)
+;   C:sshd, C:sshd-console, C:sshpasswd, C:dropbearkey, C:sshd-startup
+; and then asks whether DEVS:Internet/sshd (host keys, config with the
+; password hash, authorized_keys) should be deleted too. Pressing Return
+; keeps it. Nothing else is touched; DEVS:Internet itself belongs to the
+; TCP/IP stack and stays.
+;
+; A server that is already running keeps running until the next reboot;
+; deleting its program file does not stop it.
+;
+; Script rules, as in Install-SSH: every return code is tested right
+; after the command that set it; FailAt 21 lets the script report a
+; failure itself; only C:, S:, DEVS: and the current directory are named;
+; Echo texts contain no asterisk, dollar sign or backtick.
+
+FailAt 21
+
+; ---- Step 1: remove the boot entry -------------------------------------
+; Editing S:User-Startup needs sshd-startup: AmigaDOS has no command that
+; removes a range of lines from a file. It is used from C: if it is
+; installed there, otherwise from the current directory (the
+; distribution directory). The entry goes first, so the machine never
+; tries to start a server whose program has already been removed.
+; sshd-startup leaves the file untouched if it has no block, and refuses
+; to change it if the marker lines do not pair up.
+
+If EXISTS "C:sshd-startup"
+  C:sshd-startup REMOVE "S:User-Startup"
+  If WARN
+    Echo "Uninstall-SSH: could not remove the amiga-ssh block from S:User-Startup."
+    Skip FAILED
+  EndIf
+Else
+  If EXISTS "sshd-startup"
+    sshd-startup REMOVE "S:User-Startup"
+    If WARN
+      Echo "Uninstall-SSH: could not remove the amiga-ssh block from S:User-Startup."
+      Skip FAILED
+    EndIf
+  Else
+    Echo "Uninstall-SSH: sshd-startup was found neither in C: nor in the"
+    Echo "current directory, so S:User-Startup cannot be edited. CD into"
+    Echo "the amiga-ssh distribution directory and run Uninstall-SSH again."
+    Skip FAILED
+  EndIf
+EndIf
+
+; ---- Step 2: remove the programs ---------------------------------------
+; Each is deleted only if present. C:<name>.new files are left only by an
+; interrupted Install-SSH; they are ours and go as well. sshd-startup is
+; deleted last because step 1 may have used it.
+
+If EXISTS "C:sshd"
+  Delete "C:sshd" QUIET
+  If WARN
+    Echo "Uninstall-SSH: could not delete C:sshd."
+    Skip FAILED
+  EndIf
+EndIf
+If EXISTS "C:sshd.new"
+  Delete "C:sshd.new" QUIET
+EndIf
+
+If EXISTS "C:sshd-console"
+  Delete "C:sshd-console" QUIET
+  If WARN
+    Echo "Uninstall-SSH: could not delete C:sshd-console."
+    Skip FAILED
+  EndIf
+EndIf
+If EXISTS "C:sshd-console.new"
+  Delete "C:sshd-console.new" QUIET
+EndIf
+
+If EXISTS "C:sshpasswd"
+  Delete "C:sshpasswd" QUIET
+  If WARN
+    Echo "Uninstall-SSH: could not delete C:sshpasswd."
+    Skip FAILED
+  EndIf
+EndIf
+If EXISTS "C:sshpasswd.new"
+  Delete "C:sshpasswd.new" QUIET
+EndIf
+
+If EXISTS "C:dropbearkey"
+  Delete "C:dropbearkey" QUIET
+  If WARN
+    Echo "Uninstall-SSH: could not delete C:dropbearkey."
+    Skip FAILED
+  EndIf
+EndIf
+If EXISTS "C:dropbearkey.new"
+  Delete "C:dropbearkey.new" QUIET
+EndIf
+
+If EXISTS "C:sshd-startup"
+  Delete "C:sshd-startup" QUIET
+  If WARN
+    Echo "Uninstall-SSH: could not delete C:sshd-startup."
+    Skip FAILED
+  EndIf
+EndIf
+If EXISTS "C:sshd-startup.new"
+  Delete "C:sshd-startup.new" QUIET
+EndIf
+
+Echo "amiga-ssh programs and boot entry removed."
+
+; ---- Step 3: keys and config? ------------------------------------------
+; Ask returns 5 (WARN) for Y and 0 for N or a plain Return, so the
+; default is to keep the directory. Kept, it lets a later Install-SSH
+; reuse the same host keys (clients see no "host key changed" warning)
+; and the same password.
+
+If EXISTS "DEVS:Internet/sshd"
+  Ask "Also delete DEVS:Internet/sshd (host keys, password, authorized_keys)? (y/N)"
+  If WARN
+    Delete "DEVS:Internet/sshd" ALL QUIET
+    If WARN
+      Echo "Uninstall-SSH: could not delete DEVS:Internet/sshd completely."
+      Skip FAILED
+    EndIf
+    Echo "DEVS:Internet/sshd deleted."
+  Else
+    Echo "DEVS:Internet/sshd kept."
+  EndIf
+EndIf
+
+Echo "A server that is still running stops at the next reboot."
+Quit 0
+
+; ---- Failure -----------------------------------------------------------
+; Reached through Skip FAILED. Whatever was removed so far stays removed;
+; running Uninstall-SSH again continues with the rest.
+
+Lab FAILED
+Echo "Uninstalling stopped. Fix the problem above and run"
+Echo "Execute Uninstall-SSH again."
+Quit 20

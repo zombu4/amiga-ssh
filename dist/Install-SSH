@@ -1,0 +1,420 @@
+; Install-SSH - installs the amiga-ssh SSH server.
+;
+; Copyright (c) 2026 zombu2
+; SPDX-License-Identifier: PolyForm-Noncommercial-1.0.0
+;
+; Usage: in a Shell, CD into the directory that holds this script and the
+; programs, then type
+;     Execute Install-SSH
+;
+; It asks no questions. It installs:
+;   C:sshd, C:sshd-console, C:sshpasswd, C:dropbearkey, C:sshd-startup
+;   DEVS:Internet/sshd/config           (only if missing)
+;   DEVS:Internet/sshd/authorized_keys  (only if missing, empty)
+;   DEVS:Internet/sshd/shell-startup    (only if missing)
+;   DEVS:Internet/sshd/dropbear_*_host_key (only those missing)
+;   a marked block in S:User-Startup that starts the server at boot
+; and changes nothing else. Running it again updates the programs and
+; keeps the config, the password, the keys and authorized_keys.
+;
+; Script rules followed throughout:
+; - Every return code is tested right after the command that set it.
+;   IF, ELSE and ENDIF are commands too, so a test placed after them
+;   would see their code instead.
+; - FailAt 21 lets the script go on after a failing command (codes up to
+;   20) so it can report the failure itself instead of stopping silently.
+; - Only C:, S:, DEVS: and the current directory are named. A volume name
+;   that does not exist would make DOS wait for "insert volume".
+; - Nothing here is passed as a template argument, so the script has no
+;   .KEY line and the < and > characters keep their normal meaning.
+; - Redirection targets are written without quotes, directly after the
+;   command name (the form every 3.x Shell accepts); they are fixed names
+;   without spaces.
+; - Echo texts contain no asterisk, dollar sign or backtick, which the
+;   Shell would treat as escape, variable or command.
+
+FailAt 21
+
+; ---- Step 1: are we in the right directory? ----------------------------
+; The files to install are taken from the current directory. If one is
+; missing, nothing has been changed yet, so stopping here is safe.
+
+If NOT EXISTS "Install-SSH"
+  Echo "Install-SSH: please CD into the directory that holds Install-SSH"
+  Echo "and the programs first, then run: Execute Install-SSH"
+  Quit 20
+EndIf
+If NOT EXISTS "sshd"
+  Echo "Install-SSH: the file sshd is missing from this directory."
+  Quit 20
+EndIf
+If NOT EXISTS "sshd-console"
+  Echo "Install-SSH: the file sshd-console is missing from this directory."
+  Quit 20
+EndIf
+If NOT EXISTS "sshpasswd"
+  Echo "Install-SSH: the file sshpasswd is missing from this directory."
+  Quit 20
+EndIf
+If NOT EXISTS "dropbearkey"
+  Echo "Install-SSH: the file dropbearkey is missing from this directory."
+  Quit 20
+EndIf
+If NOT EXISTS "sshd-startup"
+  Echo "Install-SSH: the file sshd-startup is missing from this directory."
+  Quit 20
+EndIf
+If NOT EXISTS "shell-startup"
+  Echo "Install-SSH: the file shell-startup is missing from this directory."
+  Quit 20
+EndIf
+
+; ---- Step 2: is a TCP/IP stack running? --------------------------------
+; Version opens the library. It returns 0 if bsdsocket.library version 4
+; or later could be opened, 5 if the version is lower, and 20 if the
+; library cannot be opened at all; IF WARN is true for 5 and 20.
+; Still nothing has been changed.
+
+Version >NIL: "bsdsocket.library" 4
+If WARN
+  Echo "Install-SSH: bsdsocket.library (version 4 or later) could not be"
+  Echo "opened, so no TCP/IP stack is running. Start your TCP/IP stack"
+  Echo "(for example Roadshow) and run Install-SSH again."
+  Quit 20
+EndIf
+
+Echo "Installing amiga-ssh..."
+
+; ---- Step 3: copy the programs to C: -----------------------------------
+; Each program is first copied to C:<name>.new. Only when all five copies
+; are complete are the old programs replaced, so a copy that fails (disk
+; full, or a break) leaves the installed programs as they were. A .new
+; file left by an earlier interrupted run is deleted first.
+
+If EXISTS "C:sshd.new"
+  Delete "C:sshd.new" QUIET
+EndIf
+Copy "sshd" TO "C:sshd.new" QUIET
+If WARN
+  Echo "Install-SSH: copying sshd to C: failed."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sshd-console.new"
+  Delete "C:sshd-console.new" QUIET
+EndIf
+Copy "sshd-console" TO "C:sshd-console.new" QUIET
+If WARN
+  Echo "Install-SSH: copying sshd-console to C: failed."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sshpasswd.new"
+  Delete "C:sshpasswd.new" QUIET
+EndIf
+Copy "sshpasswd" TO "C:sshpasswd.new" QUIET
+If WARN
+  Echo "Install-SSH: copying sshpasswd to C: failed."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:dropbearkey.new"
+  Delete "C:dropbearkey.new" QUIET
+EndIf
+Copy "dropbearkey" TO "C:dropbearkey.new" QUIET
+If WARN
+  Echo "Install-SSH: copying dropbearkey to C: failed."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sshd-startup.new"
+  Delete "C:sshd-startup.new" QUIET
+EndIf
+Copy "sshd-startup" TO "C:sshd-startup.new" QUIET
+If WARN
+  Echo "Install-SSH: copying sshd-startup to C: failed."
+  Skip FAILED
+EndIf
+
+; Now replace the old programs. Rename refuses to overwrite, so an old
+; copy is deleted first. A server that is already running keeps running
+; from memory; it is not affected by deleting its file.
+; Protect +rwed: r and e are needed to load and run a program; d lets a
+; later reinstall or Uninstall-SSH delete it. Copy carries over the
+; protection bits of the source, which may lack e if the files came
+; through a PC or a network share.
+
+If EXISTS "C:sshd"
+  Delete "C:sshd" QUIET
+  If WARN
+    Echo "Install-SSH: could not delete the old C:sshd."
+    Skip FAILED
+  EndIf
+EndIf
+Rename "C:sshd.new" AS "C:sshd"
+If WARN
+  Echo "Install-SSH: could not rename C:sshd.new to C:sshd."
+  Skip FAILED
+EndIf
+Protect "C:sshd" +rwed
+If WARN
+  Echo "Install-SSH: could not set the protection bits of C:sshd."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sshd-console"
+  Delete "C:sshd-console" QUIET
+  If WARN
+    Echo "Install-SSH: could not delete the old C:sshd-console."
+    Skip FAILED
+  EndIf
+EndIf
+Rename "C:sshd-console.new" AS "C:sshd-console"
+If WARN
+  Echo "Install-SSH: could not rename C:sshd-console.new to C:sshd-console."
+  Skip FAILED
+EndIf
+Protect "C:sshd-console" +rwed
+If WARN
+  Echo "Install-SSH: could not set the protection bits of C:sshd-console."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sshpasswd"
+  Delete "C:sshpasswd" QUIET
+  If WARN
+    Echo "Install-SSH: could not delete the old C:sshpasswd."
+    Skip FAILED
+  EndIf
+EndIf
+Rename "C:sshpasswd.new" AS "C:sshpasswd"
+If WARN
+  Echo "Install-SSH: could not rename C:sshpasswd.new to C:sshpasswd."
+  Skip FAILED
+EndIf
+Protect "C:sshpasswd" +rwed
+If WARN
+  Echo "Install-SSH: could not set the protection bits of C:sshpasswd."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:dropbearkey"
+  Delete "C:dropbearkey" QUIET
+  If WARN
+    Echo "Install-SSH: could not delete the old C:dropbearkey."
+    Skip FAILED
+  EndIf
+EndIf
+Rename "C:dropbearkey.new" AS "C:dropbearkey"
+If WARN
+  Echo "Install-SSH: could not rename C:dropbearkey.new to C:dropbearkey."
+  Skip FAILED
+EndIf
+Protect "C:dropbearkey" +rwed
+If WARN
+  Echo "Install-SSH: could not set the protection bits of C:dropbearkey."
+  Skip FAILED
+EndIf
+
+If EXISTS "C:sshd-startup"
+  Delete "C:sshd-startup" QUIET
+  If WARN
+    Echo "Install-SSH: could not delete the old C:sshd-startup."
+    Skip FAILED
+  EndIf
+EndIf
+Rename "C:sshd-startup.new" AS "C:sshd-startup"
+If WARN
+  Echo "Install-SSH: could not rename C:sshd-startup.new to C:sshd-startup."
+  Skip FAILED
+EndIf
+Protect "C:sshd-startup" +rwed
+If WARN
+  Echo "Install-SSH: could not set the protection bits of C:sshd-startup."
+  Skip FAILED
+EndIf
+
+Echo "  programs copied to C:"
+
+; ---- Step 4: the server's directory ------------------------------------
+; DEVS:Internet normally exists already (it holds the TCP/IP settings);
+; it is only created if it does not.
+
+If NOT EXISTS "DEVS:Internet"
+  MakeDir "DEVS:Internet"
+  If WARN
+    Echo "Install-SSH: could not create DEVS:Internet."
+    Skip FAILED
+  EndIf
+EndIf
+If NOT EXISTS "DEVS:Internet/sshd"
+  MakeDir "DEVS:Internet/sshd"
+  If WARN
+    Echo "Install-SSH: could not create DEVS:Internet/sshd."
+    Skip FAILED
+  EndIf
+EndIf
+
+; ---- Step 5: config and password ---------------------------------------
+; Without a config file, sshpasswd writes a new one with the lines
+; "user=amiga", "home=SYS:" and the hash of the password "amiga". It
+; writes through a temporary file and Rename, so the config is never
+; half written.
+; With a config file, the password is only set if the file has no
+; password line yet, so a reinstall never resets a changed password.
+; Search returns 0 if the text was found and 5 if not; any other code is
+; an error. Its code is kept in the local variable sshinstrc right away,
+; because the next command (If) would replace it; it is removed again on
+; every way out of this step. Search ignores case
+; and also finds the text inside a comment line; in that rare case no
+; default password is set, which leaves password login locked (keys
+; still work) until sshpasswd is run - never the other way round.
+
+If NOT EXISTS "DEVS:Internet/sshd/config"
+  C:sshpasswd amiga
+  If WARN
+    Echo "Install-SSH: writing DEVS:Internet/sshd/config failed."
+    Skip FAILED
+  EndIf
+  Echo "  config written: login amiga, password amiga"
+Else
+  Search >NIL: "DEVS:Internet/sshd/config" "password="
+  Set sshinstrc "$RC"
+  If "$sshinstrc" EQ "0"
+    Echo "  config kept; the existing password was not changed"
+  Else
+    If "$sshinstrc" EQ "5"
+      C:sshpasswd amiga
+      If WARN
+        Echo "Install-SSH: setting the default password failed."
+        UnSet sshinstrc
+        Skip FAILED
+      EndIf
+      Echo "  config kept; it had no password, so it is now amiga"
+    Else
+      Echo "Install-SSH: could not read DEVS:Internet/sshd/config."
+      UnSet sshinstrc
+      Skip FAILED
+    EndIf
+  EndIf
+  UnSet sshinstrc
+EndIf
+
+; ---- Step 5b: the SSH shell start-up script -----------------------------
+; SSH shells start with this script (it runs S:Shell-Startup and adds the
+; aliases exit and logout). An existing copy is never replaced, so changes
+; made to it are kept.
+
+If NOT EXISTS "DEVS:Internet/sshd/shell-startup"
+  Copy "shell-startup" TO "DEVS:Internet/sshd/shell-startup" QUIET
+  If WARN
+    Echo "Install-SSH: could not copy shell-startup to DEVS:Internet/sshd."
+    Skip FAILED
+  EndIf
+  Echo "  shell start-up script installed (exit and logout end a session)"
+EndIf
+
+; ---- Step 6: authorized_keys -------------------------------------------
+; An empty file, ready for public keys. An existing one is never touched.
+; Success is checked by looking for the file, because the return code
+; the Shell sets when it cannot open a redirection target is not
+; documented.
+
+If NOT EXISTS "DEVS:Internet/sshd/authorized_keys"
+  Echo >DEVS:Internet/sshd/authorized_keys NOLINE ""
+  If NOT EXISTS "DEVS:Internet/sshd/authorized_keys"
+    Echo "Install-SSH: could not create DEVS:Internet/sshd/authorized_keys."
+    Skip FAILED
+  EndIf
+  Echo "  empty authorized_keys created"
+EndIf
+
+; ---- Step 7: host keys -------------------------------------------------
+; One key of each type the server offers, generated only if missing, so
+; a reinstall keeps the keys and clients see no "host key changed"
+; warning. Upstream dropbearkey writes the key under a temporary name
+; first and creates files only if they do not exist yet (Dropbear
+; gensignkey.c and dbutil.c buf_writefile). It prints the public key and
+; its fingerprint. The RSA key takes the longest to generate.
+
+If NOT EXISTS "DEVS:Internet/sshd/dropbear_ed25519_host_key"
+  Echo "  generating the ed25519 host key..."
+  C:dropbearkey -t ed25519 -f "DEVS:Internet/sshd/dropbear_ed25519_host_key"
+  If WARN
+    Echo "Install-SSH: generating the ed25519 host key failed."
+    Skip FAILED
+  EndIf
+EndIf
+If NOT EXISTS "DEVS:Internet/sshd/dropbear_ecdsa_host_key"
+  Echo "  generating the ecdsa host key..."
+  C:dropbearkey -t ecdsa -f "DEVS:Internet/sshd/dropbear_ecdsa_host_key"
+  If WARN
+    Echo "Install-SSH: generating the ecdsa host key failed."
+    Skip FAILED
+  EndIf
+EndIf
+If NOT EXISTS "DEVS:Internet/sshd/dropbear_rsa_host_key"
+  Echo "  generating the rsa host key (this takes the longest)..."
+  C:dropbearkey -t rsa -f "DEVS:Internet/sshd/dropbear_rsa_host_key"
+  If WARN
+    Echo "Install-SSH: generating the rsa host key failed."
+    Skip FAILED
+  EndIf
+EndIf
+
+; ---- Step 8: start at boot ---------------------------------------------
+; sshd-startup puts this block into S:User-Startup, replacing an earlier
+; one instead of adding a second (and creates the file if it is missing):
+;     ;BEGIN amiga-ssh
+;     ; (two comment lines)
+;     Run >NIL: C:sshd
+;     ;END amiga-ssh
+; There is no Stack line: the server sets up its own stack, and a Stack
+; command in User-Startup would also change the stack of every command
+; after it in that file. The block can sit at the end of User-Startup
+; because the server waits for the network itself.
+; This is the last change, so an install that stopped earlier never
+; leaves a boot entry for programs that are not fully installed.
+
+C:sshd-startup ADD "S:User-Startup"
+If WARN
+  Echo "Install-SSH: could not add the start command to S:User-Startup."
+  Skip FAILED
+EndIf
+
+; ---- Step 9: done ------------------------------------------------------
+
+Echo ""
+Echo "amiga-ssh is installed. The server starts at the next boot."
+Echo "To start it now without rebooting, type:  Run >NIL: C:sshd"
+Echo "Log in from another computer with:  ssh amiga@<this Amiga's address>"
+Echo ""
+Echo "WARNING: the default password is amiga. Anyone who can reach this"
+Echo "Amiga over the network can log in with it until you change it."
+Echo "Change it now by typing:  sshpasswd"
+Quit 0
+
+; ---- Failure -----------------------------------------------------------
+; Reached through Skip FAILED. The .new copies of the programs are ours
+; and are removed; everything already installed stays as it is and a
+; new run of Install-SSH completes it.
+
+Lab FAILED
+If EXISTS "C:sshd.new"
+  Delete "C:sshd.new" QUIET
+EndIf
+If EXISTS "C:sshd-console.new"
+  Delete "C:sshd-console.new" QUIET
+EndIf
+If EXISTS "C:sshpasswd.new"
+  Delete "C:sshpasswd.new" QUIET
+EndIf
+If EXISTS "C:dropbearkey.new"
+  Delete "C:dropbearkey.new" QUIET
+EndIf
+If EXISTS "C:sshd-startup.new"
+  Delete "C:sshd-startup.new" QUIET
+EndIf
+Echo "The installation stopped. Fix the problem above and run"
+Echo "Execute Install-SSH again; it continues where it stopped."
+Quit 20

@@ -1,0 +1,57 @@
+Subject: AmigaOS: write host keys without link()
+
+dropbearkey writes a new key to a temporary file and moves it into place
+with link(). AmigaOS file systems have no hard links: libnix's link() is
+symlink() (sources/nix20/misc/symlink.c), so the key name became a soft
+link to the temporary file, which is deleted right after, leaving a
+dangling link (seen on AmigaOS 3.2.2). libnix's open() also ignores
+O_EXCL (sources/nix/stdio/open.c), so writing to an existing name would
+overwrite the start of that file. On AmigaOS the key is written straight
+to its name after stat() shows that nothing is there, as upstream's own
+fallback for systems without hard links does.
+
+diff --git a/src/gensignkey.c b/src/gensignkey.c
+index ad62b90f..19d3dc2b 100644
+--- a/src/gensignkey.c
++++ b/src/gensignkey.c
+@@ -103,6 +103,32 @@ int signkey_generate(enum signkey_type keytype, int bits, const char* filename,
+ 	key = NULL;
+ 	buf_setpos(buf, 0);
+ 
++#ifdef __amigaos__
++	/* AmigaOS file systems have no hard links, and libnix's link() makes a
++	 * soft link (nix20/misc/symlink.c), which would dangle once the
++	 * temporary file below is deleted. libnix's open() also ignores
++	 * O_EXCL (nix/stdio/open.c), so buf_writefile() alone would write over
++	 * the start of an existing key. The key is therefore written straight
++	 * to its name, after checking that nothing is there, as upstream's
++	 * fallback for systems without hard links does. */
++	{
++		struct stat st;
++
++		if (stat(filename, &st) == 0) {
++			if (skip_exist) {
++				ret = DROPBEAR_SUCCESS;
++			} else {
++				dropbear_log(LOG_ERR, "Couldn't create new file %s: it exists",
++					filename);
++				ret = DROPBEAR_FAILURE;
++			}
++			goto out;
++		}
++		ret = buf_writefile(buf, filename, skip_exist);
++		goto out;
++	}
++#else
++
+ 	fn_temp = m_malloc(strlen(filename) + 30);
+ 	snprintf(fn_temp, strlen(filename)+30, "%s.tmp%d", filename, getpid());
+ 	ret = buf_writefile(buf, fn_temp, 0);
+@@ -132,6 +158,7 @@ int signkey_generate(enum signkey_type keytype, int bits, const char* filename,
+ 	/* ensure directory update is flushed to disk, otherwise we can end up
+ 	with zero-byte hostkey files if the power goes off */
+ 	fsync_parent_dir(filename);
++#endif /* __amigaos__ */
+ 
+ out:
+ 	if (buf) {

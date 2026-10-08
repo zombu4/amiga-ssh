@@ -1,0 +1,41 @@
+Subject: AmigaOS: also write log lines to the log file
+
+The listener and the sessions run without a console (their output is
+NIL:), so their log lines, which Dropbear prints to stderr when syslog is
+compiled out, were lost. On AmigaOS each line also goes to
+port/amiga_log.c, which appends it to DEVS:Internet/sshd/log and keeps
+that file under 16 KB by renaming it to log.old.
+
+diff --git a/src/svr-session.c b/src/svr-session.c
+index f3ac8fc2..5fac3dd5 100644
+--- a/src/svr-session.c
++++ b/src/svr-session.c
+@@ -31,6 +31,10 @@
+ #include "dss.h"
+ #include "ssh.h"
+ #include "dbrandom.h"
++#ifdef __amigaos__
++/* the log file (port/amiga_log.c) */
++#include "amiga_log.h"
++#endif
+ #include "kex.h"
+ #include "channel.h"
+ #include "chansession.h"
+@@ -349,6 +353,17 @@ void svr_dropbear_log(int priority, const char* format, va_list param) {
+ 			snprintf(datestr, sizeof(datestr), "%d", (int)timesec);
+ 		}
+ 		fprintf(stderr, "[%d] %s %s\n", getpid(), datestr, printbuf);
++#ifdef __amigaos__
++		/* The listener and the sessions run without a console, so each
++		 * line also goes to the log file (port/amiga_log.c). */
++		{
++			char logline[1100];
++
++			snprintf(logline, sizeof(logline), "[%d] %s %s", getpid(),
++					datestr, printbuf);
++			amiga_log_line(logline);
++		}
++#endif
+ 	}
+ }
+ 

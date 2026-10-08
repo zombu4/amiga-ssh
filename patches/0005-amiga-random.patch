@@ -1,0 +1,57 @@
+Subject: AmigaOS: seed file may be missing, add Amiga entropy samples
+
+DROPBEAR_URANDOM_DEV is the saved pool on AmigaOS (port/localoptions.h).
+It does not exist before the first start and may be short or locked while
+another session rewrites it, so a failed read is not fatal there. The
+samples of amiga_entropy() (port/amiga_random.c) are hashed into the pool
+on every seedrandom(); write_urandom() rewrites the seed file as upstream.
+
+diff --git a/src/dbrandom.c b/src/dbrandom.c
+index aa722036..2ac06337 100644
+--- a/src/dbrandom.c
++++ b/src/dbrandom.c
+@@ -28,6 +28,10 @@
+ #include "bignum.h"
+ #include "dbrandom.h"
+ #include "runopts.h"
++#ifdef __amigaos__
++/* timing and system samples (port/amiga_random.c) */
++#include "amiga_random.h"
++#endif
+ 
+ /* this is used to generate unique output from the same hashpool */
+ static uint32_t counter = 0;
+@@ -254,6 +258,15 @@ void seedrandom() {
+ 					DROPBEAR_PRNGD_SOCKET);
+ 			urandom_seeded = 1;
+ 		}
++#elif defined(__amigaos__)
++		/* DROPBEAR_URANDOM_DEV is the saved pool (port/localoptions.h).
++		 * It is missing on the first start and may be short or locked
++		 * while another session rewrites it; the samples below are
++		 * always added, so its absence is not fatal. */
++		if (process_file(&hs, DROPBEAR_URANDOM_DEV, INIT_SEED_SIZE, 0)
++				!= DROPBEAR_SUCCESS) {
++			TRACE(("seed file %s not read", DROPBEAR_URANDOM_DEV))
++		}
+ #else
+ 		/* non-blocking random source (probably /dev/urandom) */
+ 		if (process_file(&hs, DROPBEAR_URANDOM_DEV, INIT_SEED_SIZE, 0) 
+@@ -284,6 +297,17 @@ void seedrandom() {
+ 	process_file(&hs, "/proc/vmstat", 0, 0);
+ #endif
+ 
++#ifdef __amigaos__
++	/* EClock timing jitter, date stamp, free memory and task address */
++	{
++		unsigned char samples[AMIGA_ENTROPY_BYTES];
++		size_t len = amiga_entropy(samples, sizeof(samples));
++
++		sha256_process(&hs, samples, len);
++		m_burn(samples, sizeof(samples));
++	}
++#endif
++
+ 	pid = getpid();
+ 	sha256_process(&hs, (void*)&pid, sizeof(pid));
+ 

@@ -1,0 +1,24 @@
+Subject: AmigaOS: declare libnix's nanosleep()
+
+libnix provides nanosleep() (sources/nix/extra/nanosleep.c), but its
+<time.h> declares it only when _POSIX_TIMERS is defined, which it is not
+for this target. The failed-login delay in svr-auth.c uses it.
+
+diff --git a/src/svr-auth.c b/src/svr-auth.c
+index ca19382d..fd0ec46a 100644
+--- a/src/svr-auth.c
++++ b/src/svr-auth.c
+@@ -36,6 +36,13 @@
+ #include "runopts.h"
+ #include "dbrandom.h"
+ 
++#ifdef __amigaos__
++/* libnix has nanosleep() (nix/extra/nanosleep.c), but its <time.h>
++ * declares it only if _POSIX_TIMERS is defined, which it is not here.
++ * Same declaration as there (sys-include/time.h). */
++__stdargs int nanosleep(const struct timespec *rqtp, struct timespec *rmtp);
++#endif
++
+ static int checkusername(const char *username, unsigned int userlen);
+ 
+ /* initialise the first time for a session, resetting all parameters */

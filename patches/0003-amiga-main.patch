@@ -1,0 +1,151 @@
+Subject: AmigaOS: entry point, listener and inetd socket from the port
+
+On AmigaOS main() is port/amiga_main.c; Dropbear's main() becomes
+amiga_dropbear_main() and, without -i, calls the port's listener
+amiga_listener() in place of main_noinetd(), which needs fork().
+main_inetd() serves the connection in amiga_session_fd (the socket the
+listener handed over with -S, or descriptor 0 from a superserver) instead
+of a fixed 0, passes the listener's pre-authentication socket as the
+childpipe, and skips setsid(). libnix's signal() accepts only numbers 1-6
+and has no sigaction(), so only SIGINT (raised by libnix for Ctrl-C) gets a
+handler; SIGTERM, SIGPIPE, SIGCHLD and SIGSEGV do not exist on AmigaOS.
+
+diff --git a/src/svr-main.c b/src/svr-main.c
+index a77343cd..3ce8e702 100644
+--- a/src/svr-main.c
++++ b/src/svr-main.c
+@@ -30,10 +30,16 @@
+ #include "runopts.h"
+ #include "dbrandom.h"
+ #include "crypto_desc.h"
++#ifdef __amigaos__
++/* the port's entry point, listener and session socket (port/amiga_main.c) */
++#include "amiga_main.h"
++#endif
+ 
+ static size_t listensockets(int *sock, size_t sockcount, int *maxfd);
++#ifndef __amigaos__
+ static void sigchld_handler(int dummy);
+ static void sigsegv_handler(int);
++#endif
+ static void sigintterm_handler(int fish);
+ static void main_inetd(void);
+ static void main_noinetd(int argc, char ** argv, const char* multipath);
+@@ -42,6 +48,9 @@ static void commonsetup(void);
+ #if defined(DBMULTI_dropbear) || !DROPBEAR_MULTI
+ #if defined(DBMULTI_dropbear) && DROPBEAR_MULTI
+ int dropbear_main(int argc, char ** argv, const char* multipath)
++#elif defined(__amigaos__)
++/* main() is in port/amiga_main.c; it calls this */
++int amiga_dropbear_main(int argc, char ** argv)
+ #else
+ int main(int argc, char ** argv)
+ #endif
+@@ -86,6 +95,12 @@ int main(int argc, char ** argv)
+ #if NON_INETD_MODE
+ 	main_noinetd(argc, argv, multipath);
+ 	/* notreached */
++#elif defined(__amigaos__)
++	/* AmigaOS has no fork(): the port's listener starts a new copy of the
++	 * program in inetd mode for each connection */
++	(void)multipath;
++	amiga_listener(argc, argv);
++	/* notreached */
+ #endif
+ 
+ 	dropbear_exit("Compiled without normal mode, can't run without -i\n");
+@@ -96,6 +111,13 @@ int main(int argc, char ** argv)
+ #if INETD_MODE || DROPBEAR_DO_REEXEC
+ static void main_inetd() {
+ 	char *host, *port = NULL;
++#ifdef __amigaos__
++	/* The connection the listener handed over (-i -S), or the one a
++	 * superserver put on fd 0 (port/amiga_main.c) */
++	const int sock = amiga_session_fd;
++#else
++	const int sock = 0;
++#endif
+ 
+ 	/* Set up handlers, syslog */
+ 	commonsetup();
+@@ -104,7 +126,7 @@ static void main_inetd() {
+ 
+ 	if (svr_opts.reexec_childpipe < 0) {
+ 		/* In case our inetd was lax in logging source addresses */
+-		get_socket_address(0, NULL, NULL, &host, &port, 0);
++		get_socket_address(sock, NULL, NULL, &host, &port, 0);
+ 			if (strchr(host, ':') != NULL) {
+ 				dropbear_log(LOG_INFO, "Child connection from [%s]:%s", host, port);
+ 			} else {
+@@ -117,11 +139,19 @@ static void main_inetd() {
+ 		/* Don't check the return value - it may just fail since inetd has
+ 		 * already done setsid() after forking (xinetd on Darwin appears to do
+ 		 * this */
++#ifndef __amigaos__
++		/* AmigaOS has no process sessions */
+ 		setsid();
++#endif
+ 	}
+ 
+ 	/* -1 for childpipe in the inetd case is discarded */
+-	svr_session(0, svr_opts.reexec_childpipe);
++#ifdef __amigaos__
++	/* The listener's pre-authentication socket, or -1 */
++	svr_session(sock, amiga_session_childpipe);
++#else
++	svr_session(sock, svr_opts.reexec_childpipe);
++#endif
+ 
+ 	/* notreached */
+ }
+@@ -411,6 +441,7 @@ out:
+ #endif /* NON_INETD_MODE */
+ 
+ 
++#ifndef __amigaos__
+ /* catch + reap zombie children */
+ static void sigchld_handler(int UNUSED(unused)) {
+ 	struct sigaction sa_chld;
+@@ -438,6 +469,7 @@ static void sigsegv_handler(int UNUSED(unused)) {
+ 	(void)i;
+ 	_exit(EXIT_FAILURE);
+ }
++#endif /* !__amigaos__ */
+ 
+ /* catch ctrl-c or sigterm */
+ static void sigintterm_handler(int UNUSED(unused)) {
+@@ -448,13 +480,26 @@ static void sigintterm_handler(int UNUSED(unused)) {
+ /* Things used by inetd and non-inetd modes */
+ static void commonsetup() {
+ 
++#ifndef __amigaos__
+ 	struct sigaction sa_chld;
++#endif
+ #ifndef DISABLE_SYSLOG
+ 	if (opts.usingsyslog) {
+ 		startsyslog(PROGNAME);
+ 	}
+ #endif
+ 
++#ifdef __amigaos__
++	/* libnix's signal() takes only the numbers 1 to 6 and returns SIG_ERR
++	 * for any other (nix/signal/signal.c), so SIGTERM (15), SIGPIPE (13)
++	 * and SIGSEGV (11) cannot be set; it has no sigaction(). The one signal
++	 * libnix raises is SIGINT, for Ctrl-C (nix/signal/__chkabort.c, called
++	 * from read() and write()). AmigaOS itself sends no Unix signals, so
++	 * there is no SIGTERM, SIGPIPE, SIGCHLD or SIGSEGV to handle. */
++	if (signal(SIGINT, sigintterm_handler) == SIG_ERR) {
++		dropbear_exit("signal() error");
++	}
++#else
+ 	/* set up cleanup handler */
+ 	if (signal(SIGINT, sigintterm_handler) == SIG_ERR || 
+ #ifndef DEBUG_VALGRIND
+@@ -474,6 +519,7 @@ static void commonsetup() {
+ 	if (signal(SIGSEGV, sigsegv_handler) == SIG_ERR) {
+ 		dropbear_exit("signal() error");
+ 	}
++#endif /* __amigaos__ */
+ 
+ 	crypto_init();
+ 

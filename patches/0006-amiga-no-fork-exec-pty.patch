@@ -1,0 +1,67 @@
+Subject: AmigaOS: leave out the fork/exec/pipe and pty code
+
+AmigaOS has no fork(), exec(), pipe() or pseudo-terminals, and libnix's
+fork() returns 0 as if every caller were the child
+(sources/nix20/extra/system.c). spawn_command(), run_shell_command() and
+run_command() (dbutil.c), the daemon() replacement (compat.c) and all of
+sshpty.c are compiled out on AmigaOS, so none of them can be linked or
+called. The port starts shells and commands itself.
+
+diff --git a/src/compat.c b/src/compat.c
+index d597d83a..34431271 100644
+--- a/src/compat.c
++++ b/src/compat.c
+@@ -152,7 +152,9 @@ strlcat(char *dst, const char *src, size_t siz)
+ }
+ #endif /* HAVE_STRLCAT */
+ 
+-#ifndef HAVE_DAEMON
++/* AmigaOS has no fork(); the port's listener does not daemonise
++ * (port/amiga_main.c) */
++#if !defined(HAVE_DAEMON) && !defined(__amigaos__)
+ /* From NetBSD - daemonise a process */
+ 
+ int daemon(int nochdir, int noclose) {
+diff --git a/src/dbutil.c b/src/dbutil.c
+index a3414131..c90fc5bf 100644
+--- a/src/dbutil.c
++++ b/src/dbutil.c
+@@ -266,6 +266,9 @@ int connect_unix(const char* path) {
+ }
+ #endif
+ 
++/* AmigaOS has no fork(), exec() or pipe(): the port starts shells and
++ * commands itself (port/amiga_session.h), so these three are left out. */
++#ifndef __amigaos__
+ /* Sets up a pipe for a, returning three non-blocking file descriptors
+  * and the pid. exec_fn is the function that will actually execute the child process,
+  * it will be run after the child has fork()ed, and is passed exec_data.
+@@ -411,6 +414,7 @@ void run_command(const char* argv0, char** args, unsigned int maxfd) {
+ 
+ 	execv(argv0, args);
+ }
++#endif /* !__amigaos__ */
+ 
+ #if DEBUG_TRACE
+ void printhex(const char * label, const unsigned char * buf, int len) {
+diff --git a/src/sshpty.c b/src/sshpty.c
+index 9f12d677..2cb2d86f 100644
+--- a/src/sshpty.c
++++ b/src/sshpty.c
+@@ -22,6 +22,11 @@
+ #include "errno.h"
+ #include "sshpty.h"
+ 
++/* AmigaOS has no pseudo-terminals: the port's console handler serves the
++ * shell's terminal (port/amiga_session.h), and svr-chansession.c calls none
++ * of the functions below there. */
++#ifndef __amigaos__
++
+ /* Pty allocated with _getpty gets broken if we do I_PUSH:es to it. */
+ #if defined(HAVE__GETPTY) || defined(HAVE_OPENPTY)
+ #undef HAVE_DEV_PTMX
+@@ -412,3 +417,4 @@ pty_setowner(struct passwd *pw, const char *tty_name)
+ 		}
+ 	}
+ }
++#endif /* !__amigaos__ */

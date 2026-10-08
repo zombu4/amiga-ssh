@@ -1,0 +1,107 @@
+Subject: AmigaOS: wait for child exit with an Amiga signal, no signal pipe
+
+AmigaOS has no SIGCHLD and no pipe(). The session loop waits with
+amiga_waitselect() (port/amiga_net.c), which also returns when the signal
+bit of amiga_child_sigmask() (port/amiga_session.h) arrives; that bit marks
+a finished shell or command and sets ses.channel_signal_pending, as a byte
+on the signal pipe does upstream. The signal pipe is not created; both ends
+are -1, which dropbear_fd_set() ignores, and its FD_ISSET() test is left
+out. Ctrl-C makes WaitSelect() fail with EINTR and leaves the break signal
+set (bsdsocket.doc, WaitSelect); the loop then ends the session like
+SIGINT does upstream. Everything is under #ifdef __amigaos__.
+
+diff --git a/src/common-session.c b/src/common-session.c
+index 6108aba5..0a3df5c8 100644
+--- a/src/common-session.c
++++ b/src/common-session.c
+@@ -35,6 +35,13 @@
+ #include "channel.h"
+ #include "runopts.h"
+ #include "netio.h"
++#ifdef __amigaos__
++/* amiga_waitselect(), the "child finished" signal and the Ctrl-C test
++ * (port/) */
++#include "amiga_net.h"
++#include "amiga_session.h"
++#include "amiga_main.h"
++#endif
+ 
+ static void checktimeouts(void);
+ static long select_timeout(void);
+@@ -88,6 +95,13 @@ void common_session_init(int sock_in, int sock_out) {
+ 	ses.last_packet_time_any_sent = 0;
+ 	ses.last_packet_time_keepalive_sent = 0;
+ 	
++#ifdef __amigaos__
++	/* AmigaOS has no SIGCHLD and no pipe(). A finished child is reported by
++	 * an Amiga signal that session_loop() waits for, so there is no signal
++	 * pipe; -1 keeps every use of it inert. */
++	ses.signal_pipe[0] = -1;
++	ses.signal_pipe[1] = -1;
++#else
+ #if DROPBEAR_FUZZ
+ 	if (!fuzz.fuzzing)
+ #endif
+@@ -100,6 +114,7 @@ void common_session_init(int sock_in, int sock_out) {
+ 	ses.maxfd = MAX(ses.maxfd, ses.signal_pipe[0]);
+ 	ses.maxfd = MAX(ses.maxfd, ses.signal_pipe[1]);
+ 	}
++#endif /* __amigaos__ */
+ 	
+ 	ses.writepayload = buf_new(TRANS_MAX_PAYLOAD_LEN);
+ 	ses.transseq = 0;
+@@ -163,6 +178,9 @@ void session_loop(void(*loophandler)(void)) {
+ 	fd_set readfd, writefd;
+ 	struct timeval timeout;
+ 	int val;
++#ifdef __amigaos__
++	ULONG sigmask;
++#endif
+ 
+ 	/* main loop, select()s for all sockets in use */
+ 	for(;;) {
+@@ -208,7 +226,24 @@ void session_loop(void(*loophandler)(void)) {
+ 			dropbear_fd_set(ses.sock_out, &writefd);
+ 		}
+ 
++#ifdef __amigaos__
++		/* Also wake up when a child (shell or command) has finished; on
++		 * return sigmask holds the signals that arrived. */
++		sigmask = amiga_child_sigmask();
++		val = amiga_waitselect(ses.maxfd+1, &readfd, &writefd, NULL, &timeout,
++				&sigmask);
++		if (val < 0) {
++			/* the signal mask is undefined after an error */
++			sigmask = 0;
++			/* Ctrl-C makes WaitSelect() fail with EINTR and leaves the
++			 * break signal set; it ends the session, as SIGINT does */
++			if (errno == EINTR && amiga_break_pending()) {
++				ses.exitflag = 1;
++			}
++		}
++#else
+ 		val = select(ses.maxfd+1, &readfd, &writefd, NULL, &timeout);
++#endif
+ 
+ 		if (ses.exitflag) {
+ 			dropbear_exit("Terminated by signal");
+@@ -231,12 +266,19 @@ void session_loop(void(*loophandler)(void)) {
+ 		any thing with the data, since the pipe's purpose is purely to
+ 		wake up the select() above. */
+ 		ses.channel_signal_pending = 0;
++#ifdef __amigaos__
++		if (sigmask & amiga_child_sigmask()) {
++			TRACE(("child signal set"))
++			ses.channel_signal_pending = 1;
++		}
++#else
+ 		if (FD_ISSET(ses.signal_pipe[0], &readfd)) {
+ 			char x;
+ 			TRACE(("signal pipe set"))
+ 			while (read(ses.signal_pipe[0], &x, 1) > 0) {}
+ 			ses.channel_signal_pending = 1;
+ 		}
++#endif
+ 
+ 		/* check for auth timeout, rekeying required etc */
+ 		checktimeouts();
