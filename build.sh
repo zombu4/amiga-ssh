@@ -24,9 +24,9 @@
 #   sshd-startup  edits S:User-Startup for Install-SSH and Uninstall-SSH
 #   sftp-server   the SFTP file transfer server
 #
-# Everything else in dist/ (Install-SSH, Uninstall-SSH, the licence files)
-# is left as it is. Any failed step or check stops the script with an
-# error.
+# Everything else in dist/ (Install-SSH, Uninstall-SSH, their .info icons,
+# the licence files) is left as it is. Any failed step or check stops the
+# script with an error.
 
 set -eu
 

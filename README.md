@@ -23,11 +23,16 @@ works is described in [docs/DESIGN.md](docs/DESIGN.md).
 
 1. Copy the `dist` directory to the Amiga (for example to `RAM:` or a
    hard disk).
-2. Open a Shell, `CD` into that directory and type:
+2. Double-click the `Install-SSH` icon, or open a Shell, `CD` into that
+   directory and type:
 
    ```
    Execute Install-SSH
    ```
+
+   The icon runs the script with `C:IconX`, which first changes to the
+   directory that holds the icon; the script's messages appear in a window
+   that stays open until it is closed.
 
 The installer first checks that a TCP/IP stack is running and stops,
 changing nothing, if it is not. It asks no questions. It copies the
@@ -137,7 +142,8 @@ Every key in that file logs in as the one account.
 
 ## Uninstalling
 
-In a Shell, in the `dist` directory:
+Double-click the `Uninstall-SSH` icon, or in a Shell, in the `dist`
+directory:
 
 ```
 Execute Uninstall-SSH
